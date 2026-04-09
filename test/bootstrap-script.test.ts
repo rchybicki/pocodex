@@ -1269,7 +1269,7 @@ describe("renderBootstrapScript", () => {
     });
 
     expect(fetchCalls.at(-1)).toEqual({
-      input: "/ipc-request",
+      input: "/ipc-request?token=secret",
       init: {
         method: "POST",
         body: '{"method":"ping"}',
