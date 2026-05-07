@@ -969,6 +969,19 @@ html[data-pocodex="true"] [aria-label="Open in Popout Window"] {
     opacity: 1 !important;
   }
 
+  /*
+   * Codex's local-thread summary rail opens on hover from the right edge and
+   * includes artifacts, sources, and progress. Touch browsers can synthesize
+   * sticky hover states, which makes the rail appear while typing or scrolling
+   * and steals horizontal space from the chat.
+   */
+  html[data-pocodex="true"] [class~="group/summary-panel"] {
+    display: none !important;
+    width: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
   html[data-pocodex="true"] [data-pocodex-workspace-root-picker-backdrop] {
     align-items: stretch;
     padding: 12px;

@@ -3283,6 +3283,53 @@ describe("renderBootstrapScript", () => {
     expect(harness.dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
   });
 
+  it("does not close the mobile sidebar when right-side panels narrow the composer", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      mobile: true,
+      localStorageEntries: {
+        "pocodex-sidebar-mode": "expanded",
+      },
+    });
+    const navigation = harness.document.createElement("nav");
+    navigation.setAttribute("role", "navigation");
+    const contentPane = harness.document.createElement("div");
+    contentPane.setAttribute("class", "main-surface");
+    const composerInput = harness.document.createElement("textarea");
+    contentPane.appendChild(composerInput);
+    harness.document.body.appendChild(navigation);
+    harness.document.body.appendChild(contentPane);
+    setMobileSidebarClosedState(contentPane, navigation);
+    contentPane.style.width = "calc(100% - 300px)";
+    contentPane.style.transform = "translateX(0)";
+    contentPane.setBoundingClientRect({ left: 0, width: 90 });
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+
+    drainTestTimers(harness.timers);
+    harness.dispatchedMessages.length = 0;
+
+    harness.document.dispatchEvent({
+      type: "focusin",
+      target: composerInput,
+    });
+    drainTestTimers(harness.timers);
+
+    expect(harness.dispatchedMessages).not.toContainEqual({ type: "toggle-sidebar" });
+    expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("expanded");
+  });
+
   it("does not treat the mobile sidebar as open when the content pane has the collapsed class", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {

@@ -919,14 +919,14 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
         style?: { width?: string; transform?: string };
       }
     ).style;
-    const width = typeof style?.width === "string" ? style.width.trim() : "";
     const transform = typeof style?.transform === "string" ? style.transform.trim() : "";
 
-    if (width !== "" || transform !== "") {
-      const widthIndicatesOpen = width !== "" && width !== "100%";
+    if (transform !== "") {
       const transformIndicatesOpen =
-        transform !== "" && transform !== "translateX(0)" && transform !== "translateX(0px)";
-      return widthIndicatesOpen || transformIndicatesOpen;
+        transform !== "translateX(0)" &&
+        transform !== "translateX(0px)" &&
+        transform !== "translate3d(0px, 0px, 0px)";
+      return transformIndicatesOpen;
     }
 
     return isMobileSidebarOpenByGeometry(contentPane);
@@ -937,13 +937,8 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       return false;
     }
 
-    const viewportWidth = typeof window.innerWidth === "number" ? window.innerWidth : 0;
     const rect = contentPane.getBoundingClientRect();
     if (rect.left > 0.5) {
-      return true;
-    }
-
-    if (viewportWidth > 0 && rect.width > 0 && rect.width < viewportWidth - 0.5) {
       return true;
     }
 
