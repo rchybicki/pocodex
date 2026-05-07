@@ -259,6 +259,10 @@ export async function createBridge(
     persistedAtomRegistryPath?: string;
     workspaceRootRegistryPath?: string;
     gitWorkerBridge?: FakeGitWorkerBridge;
+    nativeCodexRefresh?: {
+      close(): void;
+      queueThreadRefresh(threadId: string, reason?: string): void;
+    } | null;
   } = {},
 ) {
   const { spawn } = await import("node:child_process");
@@ -290,6 +294,7 @@ export async function createBridge(
     persistedAtomRegistryPath: options.persistedAtomRegistryPath,
     workspaceRootRegistryPath,
     gitWorkerBridge: options.gitWorkerBridge,
+    nativeCodexRefresh: options.nativeCodexRefresh,
   });
 }
 

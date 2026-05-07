@@ -24,6 +24,7 @@ import {
   readLocalEnvironmentConfig,
   saveLocalEnvironmentConfig,
 } from "./local-environments.js";
+import type { NativeCodexRefreshQueue } from "./native-codex-refresh.js";
 import type { HostBridge, JsonRecord } from "./protocol.js";
 import {
   derivePersistedAtomRegistryPath,
@@ -56,6 +57,7 @@ interface AppServerBridgeOptions {
   workspaceRootRegistryPath?: string;
   gitWorkerBridge?: CodexDesktopGitWorkerBridge;
   codexCliPath?: string;
+  nativeCodexRefresh?: NativeCodexRefreshQueue | null;
 }
 
 interface AppExtensionInfo {
@@ -315,6 +317,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
   private workspaceRootRegistryPath: string;
   private readonly gitWorkerBridge: CodexDesktopGitWorkerBridge;
   private readonly sessionActivityWatcher: CodexSessionActivityWatcher;
+  private readonly nativeCodexRefresh: NativeCodexRefreshQueue | null;
   private activeWorkspaceRoot: string | null;
   private desktopImportPromptSeen = false;
   private persistedAtomWritePromise: Promise<void> = Promise.resolve();
@@ -354,6 +357,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
         appPath: options.appPath,
         codexAppSessionId: randomUUID(),
       });
+    this.nativeCodexRefresh = options.nativeCodexRefresh ?? null;
     this.activeWorkspaceRoot = null;
     this.sharedObjects.set("host_config", this.buildHostConfig());
     this.sharedObjects.set("remote_connections", []);
@@ -409,6 +413,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     this.fetchRequests.clear();
     this.terminalManager.dispose();
     this.sessionActivityWatcher.close();
+    this.nativeCodexRefresh?.close();
     await this.gitWorkerBridge.close().catch((error) => {
       debugLog("git-worker", "failed to close desktop git worker bridge", {
         error: normalizeError(error).message,
@@ -1571,6 +1576,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       await this.sendLocalRequest(method, {
         threadId: conversationId,
       });
+      this.nativeCodexRefresh?.queueThreadRefresh(conversationId, method);
       if (requestId) {
         this.emitBridgeMessage({
           type: "serverRequest/resolved",
@@ -3213,6 +3219,10 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       title: activity.title,
       updatedAtMs: activity.updatedAtMs,
     });
+    this.nativeCodexRefresh?.queueThreadRefresh(
+      activity.conversationId,
+      activity.active ? "active session activity" : "session activity",
+    );
     this.emitBridgeMessage({
       type: "pocodex-external-thread-activity",
       active: activity.active,

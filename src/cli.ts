@@ -23,8 +23,14 @@ import {
   formatCodexBuildSignature,
   recordUsedCodexBuild,
 } from "./lib/used-codex-build.js";
+import {
+  isNativeCodexRefreshEnabledByEnv,
+  NativeCodexRefreshController,
+  parseNativeCodexRefreshIntervalMs,
+} from "./lib/native-codex-refresh.js";
 
 const DEFAULT_LISTEN = "127.0.0.1:8787";
+const DEFAULT_NATIVE_CODEX_REFRESH_INTERVAL_MS = 60_000;
 const POCODEX_BACKGROUND_COLOR = "#111827";
 const POCODEX_MANIFEST_HREF = "/manifest.webmanifest";
 const POCODEX_PWA_APP_NAME = "Pocodex";
@@ -32,8 +38,13 @@ const POCODEX_PWA_DESCRIPTION = "Run the Codex desktop webview in an installable
 const POCODEX_SERVICE_WORKER_HREF = "/service-worker.js";
 const POCODEX_STYLESHEET_HREF = "/pocodex.css";
 const POCODEX_THEME_COLOR = "#111827";
-const FLAG_NAMES_WITH_VALUES = new Set(["--app", "--listen", "--token"]);
-const BOOLEAN_FLAG_NAMES = new Set(["--dev"]);
+const FLAG_NAMES_WITH_VALUES = new Set([
+  "--app",
+  "--listen",
+  "--native-refresh-interval",
+  "--token",
+]);
+const BOOLEAN_FLAG_NAMES = new Set(["--dev", "--native-refresh", "--no-native-refresh"]);
 
 async function main(): Promise<void> {
   const argv = normalizeCliArgv(process.argv.slice(2));
@@ -73,6 +84,10 @@ async function main(): Promise<void> {
       buildFlavor: bundle.buildFlavor,
       buildNumber: bundle.buildNumber,
     },
+    nativeCodexRefresh: new NativeCodexRefreshController({
+      enabled: options.nativeCodexRefreshEnabled,
+      minRefreshIntervalMs: options.nativeCodexRefreshIntervalMs,
+    }),
   });
 
   const sentryOptions: SentryInitOptions = {
@@ -171,6 +186,13 @@ async function main(): Promise<void> {
     );
   }
   console.log(`Using direct app-server bridge from ${bundle.appPath}`);
+  if (options.nativeCodexRefreshEnabled) {
+    console.log(
+      `Native Codex refresh enabled; stale thread updates refresh at most every ${Math.round(options.nativeCodexRefreshIntervalMs / 1_000)}s per thread`,
+    );
+  } else {
+    console.log("Native Codex refresh disabled");
+  }
   if (options.devMode) {
     console.log(`Watching ${pocodexCssPath} for stylesheet changes`);
   }
@@ -181,6 +203,16 @@ async function parseServeCommand(argv: string[]): Promise<ServeCommandOptions> {
 
   const appPath = readFlag(argv, "--app") ?? (await resolveDefaultCodexAppPath());
   const listen = readFlag(argv, "--listen") ?? DEFAULT_LISTEN;
+  const nativeRefreshIntervalMs =
+    parseNativeCodexRefreshIntervalMs(readFlag(argv, "--native-refresh-interval")) ??
+    parseNativeCodexRefreshIntervalMs(process.env.POCODEX_NATIVE_REFRESH_INTERVAL_SECONDS) ??
+    DEFAULT_NATIVE_CODEX_REFRESH_INTERVAL_MS;
+  const nativeRefreshEnv = isNativeCodexRefreshEnabledByEnv(process.env.POCODEX_NATIVE_REFRESH);
+  const nativeCodexRefreshEnabled = hasFlag(argv, "--no-native-refresh")
+    ? false
+    : hasFlag(argv, "--native-refresh")
+      ? true
+      : (nativeRefreshEnv ?? process.platform === "darwin");
   const token = readFlag(argv, "--token") ?? "";
   const devMode = hasFlag(argv, "--dev");
 
@@ -194,6 +226,8 @@ async function parseServeCommand(argv: string[]): Promise<ServeCommandOptions> {
     devMode,
     listenHost: parsedListenAddress.listenHost,
     listenPort: parsedListenAddress.listenPort,
+    nativeCodexRefreshEnabled,
+    nativeCodexRefreshIntervalMs: nativeRefreshIntervalMs,
     token,
   };
 }
@@ -240,7 +274,9 @@ function hasFlag(argv: string[], name: string): boolean {
 
 function printUsage(): void {
   console.error("Usage:");
-  console.error("  pocodex [--token <secret>] [--app <path>] [--listen 127.0.0.1:8787] [--dev]");
+  console.error(
+    "  pocodex [--token <secret>] [--app <path>] [--listen 127.0.0.1:8787] [--native-refresh] [--no-native-refresh] [--native-refresh-interval <seconds>] [--dev]",
+  );
 }
 
 function watchPocodexStylesheet(cssFilePath: string, onChange: () => void): () => void {

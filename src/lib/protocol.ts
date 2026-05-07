@@ -10,6 +10,8 @@ export interface ServeCommandOptions {
   devMode: boolean;
   listenHost: string;
   listenPort: number;
+  nativeCodexRefreshEnabled: boolean;
+  nativeCodexRefreshIntervalMs: number;
   token: string;
 }
 

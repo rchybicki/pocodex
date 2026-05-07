@@ -240,6 +240,39 @@ describeAppServerBridge(({ children }) => {
     await bridge.close();
   });
 
+  it("queues native Codex refreshes for external thread activity", async () => {
+    const refreshes: Array<{ reason?: string; threadId: string }> = [];
+    const nativeCodexRefresh = {
+      close: () => {},
+      queueThreadRefresh: (threadId: string, reason?: string) => {
+        refreshes.push({ reason, threadId });
+      },
+    };
+    const bridge = await createBridge(children, {
+      nativeCodexRefresh,
+    });
+
+    const handleActivity = Reflect.get(bridge, "handleCodexSessionActivity") as (
+      activity: unknown,
+    ) => void;
+    handleActivity.call(bridge, {
+      active: false,
+      conversationId: "019e01e3-877b-73a1-a51a-68717c50a0fa",
+      path: "/tmp/rollout-2026-05-07T12-02-29-019e01e3-877b-73a1-a51a-68717c50a0fa.jsonl",
+      title: "pocodex",
+      updatedAtMs: Date.parse("2026-05-07T12:00:00.000Z"),
+    });
+
+    expect(refreshes).toEqual([
+      {
+        reason: "session activity",
+        threadId: "019e01e3-877b-73a1-a51a-68717c50a0fa",
+      },
+    ]);
+
+    await bridge.close();
+  });
+
   it("marks externally active focused thread payloads as running", async () => {
     const bridge = await createBridge(children);
     const emittedMessages: unknown[] = [];
@@ -975,7 +1008,15 @@ describeAppServerBridge(({ children }) => {
   });
 
   it("resolves archive requests for the desktop webview after archiving succeeds", async () => {
-    const bridge = await createBridge(children);
+    const refreshes: Array<{ reason?: string; threadId: string }> = [];
+    const bridge = await createBridge(children, {
+      nativeCodexRefresh: {
+        close: () => {},
+        queueThreadRefresh: (threadId: string, reason?: string) => {
+          refreshes.push({ reason, threadId });
+        },
+      },
+    });
     const emittedMessages: unknown[] = [];
     bridge.on("bridge_message", (message) => {
       emittedMessages.push(message);
@@ -1004,6 +1045,12 @@ describeAppServerBridge(({ children }) => {
         requestId: "archive-1",
       },
     });
+    expect(refreshes).toEqual([
+      {
+        reason: "thread/archive",
+        threadId: "thr_test",
+      },
+    ]);
 
     await bridge.close();
   });
