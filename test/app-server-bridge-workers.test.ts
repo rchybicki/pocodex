@@ -7,6 +7,7 @@ import {
   createBridge,
   tempDirs,
   TEST_WORKSPACE_ROOT,
+  TEST_PROJECT_BETA_ROOT,
   FakeGitWorkerBridge,
   getFetchResponse,
   getFetchJsonBody,
@@ -381,6 +382,111 @@ describeAppServerBridge(({ children }) => {
     expect(forwarded).toContain(`"cwd":"${TEST_WORKSPACE_ROOT}"`);
     expect(forwarded).toContain('"model":"gpt-5.4"');
     expect(forwarded).not.toContain('"config"');
+
+    await bridge.close();
+  });
+
+  it("uses the active workspace root when starting a thread without a cwd", async () => {
+    const bridge = await createBridge(children);
+    const child = children.at(0);
+
+    await bridge.forwardBridgeMessage({
+      type: "fetch",
+      requestId: "set-active-root",
+      method: "POST",
+      url: "vscode://codex/set-global-state",
+      body: JSON.stringify({
+        key: "active-workspace-roots",
+        value: [TEST_PROJECT_BETA_ROOT, TEST_WORKSPACE_ROOT],
+      }),
+    });
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "start-active-root",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+        },
+      },
+    });
+
+    const forwarded = child?.writes ?? "";
+    expect(forwarded).toContain('"method":"thread/start"');
+    expect(forwarded).toContain(`"cwd":"${TEST_PROJECT_BETA_ROOT}"`);
+
+    await bridge.close();
+  });
+
+  it("uses the active workspace root when starting a thread with a stale cwd", async () => {
+    const bridge = await createBridge(children);
+    const child = children.at(0);
+
+    await bridge.forwardBridgeMessage({
+      type: "fetch",
+      requestId: "set-active-root",
+      method: "POST",
+      url: "vscode://codex/set-global-state",
+      body: JSON.stringify({
+        key: "active-workspace-roots",
+        value: [TEST_PROJECT_BETA_ROOT, TEST_WORKSPACE_ROOT],
+      }),
+    });
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "start-active-root",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+          cwd: TEST_WORKSPACE_ROOT,
+          workspaceRoots: [TEST_WORKSPACE_ROOT],
+        },
+      },
+    });
+
+    const forwarded = child?.writes ?? "";
+    expect(forwarded).toContain('"method":"thread/start"');
+    expect(forwarded).toContain(`"cwd":"${TEST_PROJECT_BETA_ROOT}"`);
+    expect(forwarded).toContain(`"workspaceRoots":["${TEST_PROJECT_BETA_ROOT}"]`);
+
+    await bridge.close();
+  });
+
+  it("forwards thread prewarm starts with the active workspace root", async () => {
+    const bridge = await createBridge(children);
+    const child = children.at(0);
+
+    await bridge.forwardBridgeMessage({
+      type: "fetch",
+      requestId: "set-active-root",
+      method: "POST",
+      url: "vscode://codex/set-global-state",
+      body: JSON.stringify({
+        key: "active-workspace-roots",
+        value: [TEST_PROJECT_BETA_ROOT, TEST_WORKSPACE_ROOT],
+      }),
+    });
+
+    await bridge.forwardBridgeMessage({
+      type: "thread-prewarm-start",
+      request: {
+        id: "prewarm-active-root",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+          cwd: TEST_WORKSPACE_ROOT,
+          workspaceRoots: [TEST_WORKSPACE_ROOT],
+        },
+      },
+    });
+
+    const forwarded = child?.writes ?? "";
+    expect(forwarded).toContain('"method":"thread/start"');
+    expect(forwarded).toContain(`"cwd":"${TEST_PROJECT_BETA_ROOT}"`);
+    expect(forwarded).toContain(`"workspaceRoots":["${TEST_PROJECT_BETA_ROOT}"]`);
 
     await bridge.close();
   });

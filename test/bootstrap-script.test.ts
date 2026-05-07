@@ -125,6 +125,10 @@ class TestElement extends TestEventTargetLike {
     this.dispatchEvent({ type: "click" });
   }
 
+  focus(): void {
+    this.dispatchEvent({ type: "focus" });
+  }
+
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
     if (name === "id") {
@@ -1200,6 +1204,61 @@ describe("renderBootstrapScript", () => {
     });
   });
 
+  it("prompts for a session token and saves it when standalone launches are unauthorized", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+      importIconSvg: '<svg viewBox="0 0 1 1"></svg>',
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/",
+    });
+    harness.setFetchHandler(async (input) => {
+      const inputText = String(input);
+      return new TestResponse(JSON.stringify({ ok: inputText.endsWith("?token=secret") }), {
+        status: inputText.endsWith("?token=secret") ? 200 : 401,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    });
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    const tokenInput = harness.document.querySelector('input[data-pocodex-token-input="true"]');
+    const tokenForm = harness.document.querySelector('[data-pocodex-token-form="true"]');
+    expect(tokenInput).toBeTruthy();
+    expect(tokenForm).toBeTruthy();
+
+    if (!tokenInput || !tokenForm) {
+      throw new Error("Expected token form to exist.");
+    }
+
+    tokenInput.value = "secret";
+    tokenForm.dispatchEvent({
+      type: "submit",
+      preventDefault: () => undefined,
+    });
+    await flushBootstrapMicrotasks();
+
+    expect(harness.getLocalStorageValue("__pocodex_token")).toBe("secret");
+    expect(harness.fetchCalls).toContainEqual({
+      input: "/session-check?token=secret",
+      init: {
+        cache: "no-store",
+        credentials: "same-origin",
+      },
+    });
+    expect(TestWebSocket.latest?.url).toBe("ws://127.0.0.1:8787/session?token=secret");
+  });
+
   it("runs without throwing and installs the browser bridge", () => {
     const script = renderBootstrapScript({
       sentryOptions: {
@@ -2105,6 +2164,11 @@ describe("renderBootstrapScript", () => {
       setTimeout: (callback: () => void, delay: number) => number;
       clearTimeout: (id: number) => void;
       matchMedia: (query: string) => { matches: boolean; media: string };
+      localStorage: {
+        getItem: (key: string) => string | null;
+        setItem: (key: string, value: string) => void;
+        removeItem: (key: string) => void;
+      };
       innerWidth: number;
       locationReloaded: boolean;
     };
@@ -2141,6 +2205,15 @@ describe("renderBootstrapScript", () => {
       matches: query.includes("max-width"),
       media: query,
     });
+    windowObject.localStorage = {
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      getItem: (key: string) => storage.get(key) ?? null,
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+    };
     windowObject.innerWidth = 390;
     windowObject.locationReloaded = false;
 
@@ -2235,8 +2308,23 @@ describe("renderBootstrapScript", () => {
 
     expect(fetchCalls).not.toHaveLength(0);
     expect(dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
+    expect(storage.get("pocodex-sidebar-mode")).toBe("collapsed");
 
     dispatchedMessages.length = 0;
+    storage.set("pocodex-sidebar-mode", "expanded");
+    contentPane.style.width = "calc(100% - var(--spacing-token-sidebar))";
+    contentPane.style.transform = "translateX(var(--spacing-token-sidebar))";
+    document.dispatchEvent(new MouseEvent("click", { target: title }));
+    contentPane.style.width = "100%";
+    contentPane.style.transform = "translateX(0)";
+    drainTimers(timers);
+
+    expect(dispatchedMessages).not.toContainEqual({ type: "toggle-sidebar" });
+    expect(storage.get("pocodex-sidebar-mode")).toBe("collapsed");
+
+    dispatchedMessages.length = 0;
+    contentPane.style.width = "calc(100% - var(--spacing-token-sidebar))";
+    contentPane.style.transform = "translateX(var(--spacing-token-sidebar))";
     document.dispatchEvent(new MouseEvent("click", { target: archiveButton }));
     drainTimers(timers);
 
@@ -3376,6 +3464,166 @@ describe("renderBootstrapScript", () => {
     expect(currentUrl.searchParams.get("thread")).toBe("thr_123");
     expect(currentUrl.searchParams.get("initialRoute")).toBeNull();
     expect(harness.replaceStateCalls).toHaveLength(1);
+  });
+
+  it("injects the selected workspace root into local thread starts without a cwd", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret",
+    });
+    harness.run(script);
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "electron-set-active-workspace-root",
+      root: "/tmp/project-beta",
+    });
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+    await flushBootstrapMicrotasks();
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "mcp-request",
+      request: {
+        id: "start-1",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+        },
+      },
+    });
+
+    expect(harness.getSentEnvelopes()).toContainEqual({
+      type: "bridge_message",
+      message: {
+        type: "mcp-request",
+        request: {
+          id: "start-1",
+          method: "thread/start",
+          params: {
+            prompt: "ship it",
+            cwd: "/tmp/project-beta",
+            workspaceRoots: ["/tmp/project-beta"],
+          },
+        },
+      },
+    });
+  });
+
+  it("replaces stale local thread start cwd with the selected workspace root", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret",
+    });
+    harness.run(script);
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "electron-set-active-workspace-root",
+      root: "/tmp/project-beta",
+    });
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+    await flushBootstrapMicrotasks();
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "mcp-request",
+      request: {
+        id: "start-stale",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+          cwd: "/tmp/project-alpha",
+          workspaceRoots: ["/tmp/project-alpha"],
+        },
+      },
+    });
+
+    expect(harness.getSentEnvelopes()).toContainEqual({
+      type: "bridge_message",
+      message: {
+        type: "mcp-request",
+        request: {
+          id: "start-stale",
+          method: "thread/start",
+          params: {
+            prompt: "ship it",
+            cwd: "/tmp/project-beta",
+            workspaceRoots: ["/tmp/project-beta"],
+          },
+        },
+      },
+    });
+  });
+
+  it("replaces stale local thread prewarm cwd with the selected workspace root", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret",
+    });
+    harness.run(script);
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "electron-set-active-workspace-root",
+      root: "/tmp/project-beta",
+    });
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+    await flushBootstrapMicrotasks();
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "thread-prewarm-start",
+      request: {
+        id: "prewarm-stale",
+        method: "thread/start",
+        params: {
+          prompt: "ship it",
+          cwd: "/tmp/project-alpha",
+          workspaceRoots: ["/tmp/project-alpha"],
+        },
+      },
+    });
+
+    expect(harness.getSentEnvelopes()).toContainEqual({
+      type: "bridge_message",
+      message: {
+        type: "thread-prewarm-start",
+        request: {
+          id: "prewarm-stale",
+          method: "thread/start",
+          params: {
+            prompt: "ship it",
+            cwd: "/tmp/project-beta",
+            workspaceRoots: ["/tmp/project-beta"],
+          },
+        },
+      },
+    });
   });
 
   it("updates the thread query param for local navigate-to-route messages", async () => {

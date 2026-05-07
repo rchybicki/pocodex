@@ -159,6 +159,35 @@ html[data-pocodex="true"] #pocodex-status-host [data-pocodex-status-actions] {
   margin-top: 16px;
 }
 
+html[data-pocodex="true"] #pocodex-status-host [data-pocodex-token-form] {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+html[data-pocodex="true"] #pocodex-status-host [data-pocodex-token-input] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--pocodex-border-heavy);
+  border-radius: var(--pocodex-radius-sm);
+  background: var(--pocodex-surface-subtle);
+  color: var(--pocodex-text);
+  font: inherit;
+  font-size: var(--text-base, 13px);
+  outline: none;
+}
+
+html[data-pocodex="true"] #pocodex-status-host [data-pocodex-token-input]:focus {
+  border-color: var(--pocodex-focus);
+}
+
+html[data-pocodex="true"] #pocodex-status-host [data-pocodex-token-error] {
+  margin: 0;
+  color: var(--color-token-error-foreground, #d04444);
+}
+
 html[data-pocodex="true"] #pocodex-status-host [data-pocodex-status-actions] button {
   min-height: 40px;
   padding: 0 14px;

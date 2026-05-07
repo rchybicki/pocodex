@@ -34,6 +34,11 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     actions?: ConnectionStatusAction[];
   };
 
+  type ConnectionTokenFormOptions = {
+    initialValue?: string;
+    message: string;
+  };
+
   type ConnectionPhase = "connected" | "degraded" | "reconnecting" | "reload-required";
 
   type SidebarMode = "expanded" | "collapsed";
@@ -209,8 +214,10 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   let sidebarModeInteractionTimer: number | null = null;
   let pendingSidebarModeTarget: SidebarMode | null = null;
   let pendingSidebarModeTargetUntil = 0;
+  let mobileSidebarCloseTimer: number | null = null;
   let settingsShellObserver: MutationObserver | null = null;
   let workspaceRootPickerState: WorkspaceRootPickerState | null = null;
+  let selectedWorkspaceRoot: string | null = null;
 
   toastHost.id = "pocodex-toast-host";
   statusHost.id = "pocodex-status-host";
@@ -418,6 +425,73 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     statusHost.appendChild(card);
+  }
+
+  function setConnectionTokenFormStatus(options: ConnectionTokenFormOptions): void {
+    ensureHostAttached(statusHost);
+    statusHost.replaceChildren();
+    statusHost.dataset.mode = "blocking";
+    statusHost.hidden = false;
+
+    const card = document.createElement("div");
+    card.dataset.pocodexStatusCard = "true";
+
+    const title = document.createElement("strong");
+    title.textContent = "Pocodex";
+
+    const body = document.createElement("p");
+    body.textContent = options.message;
+
+    const form = document.createElement("form");
+    form.dataset.pocodexTokenForm = "true";
+
+    const input = document.createElement("input");
+    input.type = "password";
+    input.value = options.initialValue ?? "";
+    input.placeholder = "Session token";
+    input.autocomplete = "off";
+    input.autocapitalize = "none";
+    input.spellcheck = false;
+    input.dataset.pocodexTokenInput = "true";
+
+    const error = document.createElement("p");
+    error.dataset.pocodexTokenError = "true";
+    error.hidden = true;
+
+    const actions = document.createElement("div");
+    actions.dataset.pocodexStatusActions = "true";
+
+    const saveButton = document.createElement("button");
+    saveButton.type = "submit";
+    saveButton.textContent = "Save token";
+    saveButton.dataset.pocodexStatusStyle = "primary";
+
+    const reloadButton = document.createElement("button");
+    reloadButton.type = "button";
+    reloadButton.textContent = "Reload app";
+    reloadButton.dataset.pocodexStatusAction = "reload";
+    reloadButton.dataset.pocodexStatusStyle = "secondary";
+    reloadButton.addEventListener("click", reloadCurrentPage);
+
+    actions.append(saveButton, reloadButton);
+    form.append(input, error, actions);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const token = input.value.trim();
+      if (!token) {
+        error.textContent = "Enter the session token from the Pocodex CLI URL.";
+        error.hidden = false;
+        return;
+      }
+
+      persistSessionToken(token);
+      error.hidden = true;
+      void connectSocket();
+    });
+
+    card.append(title, body, form);
+    statusHost.appendChild(card);
+    input.focus();
   }
 
   function clearConnectionStatus(): void {
@@ -699,13 +773,13 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     if (isMobileSidebarThreadRow(nearestInteractive)) {
-      scheduleMobileSidebarClose();
+      scheduleMobileSidebarClose(150);
       return;
     }
 
     if (isNewThreadTrigger(nearestInteractive)) {
       clearThreadQuery();
-      scheduleMobileSidebarClose();
+      scheduleMobileSidebarClose(150);
     }
   }
 
@@ -802,15 +876,25 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     scheduleMobileSidebarClose();
   }
 
-  function scheduleMobileSidebarClose(): void {
-    window.setTimeout(() => {
+  function scheduleMobileSidebarClose(delayMs = 0): void {
+    if (isMobileSidebarViewport()) {
+      persistSidebarMode("collapsed");
+      notePendingSidebarModeTarget("collapsed");
+    }
+
+    if (mobileSidebarCloseTimer !== null) {
+      return;
+    }
+
+    mobileSidebarCloseTimer = window.setTimeout(() => {
+      mobileSidebarCloseTimer = null;
       if (isMobileSidebarViewport() && isMobileSidebarOpen()) {
         armSidebarModeInteraction();
         notePendingSidebarModeTarget("collapsed");
         dispatchHostMessage({ type: "toggle-sidebar" });
         scheduleSidebarModeReconcile(5);
       }
-    }, 0);
+    }, delayMs);
   }
 
   function isMobileSidebarOpen(): boolean {
@@ -3035,6 +3119,51 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
   }
 
+  function prepareOutgoingBridgeMessage(message: unknown): unknown {
+    if (!isRecord(message) || typeof message.type !== "string") {
+      return message;
+    }
+
+    if (message.type === "electron-set-active-workspace-root") {
+      selectedWorkspaceRoot = readNonEmptyString(message.root);
+      return message;
+    }
+
+    if (message.type === "electron-clear-active-workspace-root") {
+      selectedWorkspaceRoot = null;
+      return message;
+    }
+
+    if (
+      (message.type !== "mcp-request" && message.type !== "thread-prewarm-start") ||
+      !selectedWorkspaceRoot
+    ) {
+      return message;
+    }
+
+    const request = isRecord(message.request) ? message.request : null;
+    if (!request || request.method !== "thread/start") {
+      return message;
+    }
+
+    const params = isRecord(request.params) ? request.params : {};
+    if (params.workspaceKind === "projectless") {
+      return message;
+    }
+
+    return {
+      ...message,
+      request: {
+        ...request,
+        params: {
+          ...params,
+          cwd: selectedWorkspaceRoot,
+          workspaceRoots: [selectedWorkspaceRoot],
+        },
+      },
+    };
+  }
+
   function rememberRestorableTerminalAttachment(message: Record<string, unknown>): void {
     const sessionId = readNonEmptyString(message.sessionId);
     if (!sessionId) {
@@ -3601,12 +3730,13 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       isConnecting = false;
       if (validation.reason === "unauthorized") {
         persistSessionToken("");
-        setConnectionPhase(
-          "reload-required",
-          token
-            ? "Pocodex rejected this token. Open the exact URL printed by the CLI for the current run."
-            : "Pocodex requires a token. Open the exact URL printed by the CLI for the current run.",
-        );
+        connectionPhase = "reload-required";
+        setConnectionTokenFormStatus({
+          initialValue: token,
+          message: token
+            ? "Pocodex rejected this token. Paste the current session token from the CLI URL."
+            : "Pocodex requires a session token. Paste the token from the CLI URL to save it on this device.",
+        });
         return;
       }
       scheduleReconnect("Pocodex is unavailable. Retrying...", {
@@ -3785,9 +3915,10 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
         return;
       }
       syncRestorableTerminalAttachments(message, "outgoing");
-      sendEnvelope({ type: "bridge_message", message });
-      syncThreadQueryWithBridgeMessage(message);
-      if (isRecord(message) && message.type === "ready") {
+      const outgoingMessage = prepareOutgoingBridgeMessage(message);
+      sendEnvelope({ type: "bridge_message", message: outgoingMessage });
+      syncThreadQueryWithBridgeMessage(outgoingMessage);
+      if (isRecord(outgoingMessage) && outgoingMessage.type === "ready") {
         scheduleInitialThreadRestoreFromUrl();
       }
     },

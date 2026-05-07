@@ -934,6 +934,7 @@ const ASYNC_BRIDGE_RELAY_MESSAGE_TYPES = new Set([
   "fetch-stream",
   "cancel-fetch-stream",
   "mcp-request",
+  "thread-prewarm-start",
   "mcp-response",
   "mcp-notification",
   "log-message",

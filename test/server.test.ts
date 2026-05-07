@@ -479,6 +479,72 @@ describe("PocodexServer", () => {
     socket.close();
   });
 
+  it("does not block bridge messages behind thread prewarm relay work", async () => {
+    const { server, relay, url } = await createTestServer();
+    servers.push(server);
+
+    let releaseBridgeDispatch: (() => void) | null = null;
+    const bridgeDispatchBlocked = new Promise<void>((resolve) => {
+      releaseBridgeDispatch = resolve;
+    });
+    relay.forwardBridgeMessage = async (message: unknown): Promise<void> => {
+      relay.forwardedMessages.push(message);
+      const method =
+        typeof message === "object" &&
+        message !== null &&
+        "request" in message &&
+        typeof (message as { request?: { method?: unknown } }).request?.method === "string"
+          ? (message as { request: { method: string } }).request.method
+          : "";
+      if (method === "thread/start") {
+        await bridgeDispatchBlocked;
+      }
+    };
+
+    const socket = await connect(url, "secret");
+
+    socket.send(
+      JSON.stringify({
+        type: "bridge_message",
+        message: {
+          type: "thread-prewarm-start",
+          request: {
+            id: "prewarm-1",
+            method: "thread/start",
+          },
+        },
+      }),
+    );
+    socket.send(
+      JSON.stringify({
+        type: "bridge_message",
+        message: {
+          type: "fetch",
+          requestId: "request-1",
+          url: "vscode://codex/thread/list",
+        },
+      }),
+    );
+
+    await waitForCondition(() => relay.forwardedMessages.length === 2);
+
+    expect(relay.forwardedMessages[0]).toEqual({
+      type: "thread-prewarm-start",
+      request: {
+        id: expect.stringMatching(/^pocodex:[^:]+:prewarm-1$/),
+        method: "thread/start",
+      },
+    });
+    expect(relay.forwardedMessages[1]).toEqual({
+      type: "fetch",
+      requestId: expect.stringMatching(/^pocodex:[^:]+:request-1$/),
+      url: "vscode://codex/thread/list",
+    });
+
+    releaseBridgeDispatch?.();
+    socket.close();
+  });
+
   it("routes terminal output to all observers while enforcing a single controller", async () => {
     const { server, relay, url } = await createTestServer();
     servers.push(server);

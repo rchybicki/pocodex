@@ -142,7 +142,7 @@ interface ManagedCodexAuth {
 }
 
 interface AppServerMcpRequestEnvelope {
-  type: "mcp-request";
+  type: "mcp-request" | "thread-prewarm-start";
   request?: JsonRpcRequest;
 }
 
@@ -535,10 +535,14 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       case "electron-set-active-workspace-root":
         await this.handleSetActiveWorkspaceRoot(message);
         return;
+      case "electron-clear-active-workspace-root":
+        await this.handleClearActiveWorkspaceRoot();
+        return;
       case "electron-rename-workspace-root-option":
         await this.handleRenameWorkspaceRootOption(message);
         return;
       case "mcp-request":
+      case "thread-prewarm-start":
         await this.handleMcpRequest(message as unknown as AppServerMcpRequestEnvelope);
         return;
       case "mcp-response":
@@ -1850,6 +1854,12 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     this.emitWorkspaceRootsUpdated();
   }
 
+  private async handleClearActiveWorkspaceRoot(): Promise<void> {
+    this.activeWorkspaceRoot = null;
+    await this.persistWorkspaceRootRegistry();
+    this.emitWorkspaceRootsUpdated();
+  }
+
   private async handleRenameWorkspaceRootOption(message: JsonRecord): Promise<void> {
     const root = typeof message.root === "string" ? message.root : null;
     if (!root) {
@@ -1900,7 +1910,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       case "set-global-state":
         return {
           status: 200,
-          body: this.writeGlobalState(body),
+          body: await this.writeGlobalState(body),
         };
       case "list-pinned-threads":
         return {
@@ -2712,6 +2722,17 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     delete sanitized.config;
     delete sanitized.modelProvider;
 
+    if (
+      sanitized.workspaceKind !== "projectless" &&
+      this.activeWorkspaceRoot &&
+      sanitized.cwd !== this.activeWorkspaceRoot
+    ) {
+      sanitized.cwd = this.activeWorkspaceRoot;
+      sanitized.workspaceRoots = [this.activeWorkspaceRoot];
+    } else if (typeof sanitized.cwd !== "string" || sanitized.cwd.trim().length === 0) {
+      sanitized.cwd = this.activeWorkspaceRoot ?? this.cwd;
+    }
+
     return sanitized;
   }
 
@@ -2741,7 +2762,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     return sanitized;
   }
 
-  private writeGlobalState(body: unknown): Record<string, never> {
+  private async writeGlobalState(body: unknown): Promise<Record<string, never>> {
     if (!isJsonRecord(body) || typeof body.key !== "string") {
       return {};
     }
@@ -2756,6 +2777,25 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       }
       this.emitBridgeMessage({
         type: "pinned-threads-updated",
+      });
+    }
+    if (body.key === "active-workspace-roots" && Array.isArray(body.value)) {
+      const roots = uniqueStrings(body.value);
+      let workspaceOptionsChanged = false;
+      for (const root of roots) {
+        workspaceOptionsChanged ||= !this.workspaceRoots.has(root);
+        this.ensureWorkspaceRoot(root, { setActive: false });
+      }
+      this.activeWorkspaceRoot = roots.find((root) => this.workspaceRoots.has(root)) ?? null;
+      await this.persistWorkspaceRootRegistry();
+      this.syncWorkspaceGlobalState();
+      if (workspaceOptionsChanged) {
+        this.emitBridgeMessage({
+          type: "workspace-root-options-updated",
+        });
+      }
+      this.emitBridgeMessage({
+        type: "active-workspace-roots-updated",
       });
     }
     return {};
