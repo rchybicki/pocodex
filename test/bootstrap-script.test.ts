@@ -3448,6 +3448,71 @@ describe("renderBootstrapScript", () => {
     expect(currentUrl.searchParams.get("thread")).toBe("thr_second");
   });
 
+  it("unwraps local route values from sidebar thread row ids", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret&thread=thr_first",
+    });
+    const nav = harness.document.createElement("nav");
+    nav.setAttribute("role", "navigation");
+    const row = harness.document.createElement("div");
+    row.setAttribute("role", "button");
+    row.setAttribute("data-app-action-sidebar-thread-row", "true");
+    row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+    row.setAttribute("data-app-action-sidebar-thread-kind", "local");
+    row.setAttribute("data-app-action-sidebar-thread-id", "local/thr_second");
+    nav.appendChild(row);
+    harness.document.body.appendChild(nav);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    harness.document.dispatchEvent(new TestMouseEvent("click", { target: row }));
+
+    const currentUrl = new URL(harness.windowObject.location.href);
+    expect(currentUrl.searchParams.get("thread")).toBe("thr_second");
+  });
+
+  it("repairs local route values in the thread query param before restoring", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret&thread=local%2Fthr_second",
+    });
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    await harness.getElectronBridge().sendMessageFromView({
+      type: "ready",
+    });
+    drainTestTimers(harness.timers);
+
+    const currentUrl = new URL(harness.windowObject.location.href);
+    expect(currentUrl.searchParams.get("thread")).toBe("thr_second");
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "thread-stream-resume-request",
+      hostId: "local",
+      conversationId: "thr_second",
+    });
+  });
+
   it("does not update the thread query param when clicking sidebar row actions", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {

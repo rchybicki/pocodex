@@ -2917,7 +2917,18 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   }
 
   function normalizeRestorableConversationId(value: unknown): string | null {
-    const conversationId = readNonEmptyString(value);
+    let conversationId = readNonEmptyString(value);
+    if (!conversationId || conversationId.startsWith("home:")) {
+      return null;
+    }
+
+    const routeConversationId = extractLocalConversationIdFromRoute(conversationId);
+    if (routeConversationId) {
+      conversationId = routeConversationId;
+    } else if (conversationId.startsWith("local/")) {
+      conversationId = conversationId.slice("local/".length);
+    }
+
     if (!conversationId || conversationId.startsWith("home:")) {
       return null;
     }
