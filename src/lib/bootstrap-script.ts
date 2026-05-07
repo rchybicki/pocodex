@@ -566,8 +566,51 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     scheduleSidebarModeReconcile(5);
     const target = event.target instanceof Element ? event.target : null;
     if (target) {
+      syncThreadQueryWithSidebarClick(target);
       armSidebarModeInteractionIfToggleTrigger(target);
     }
+  }
+
+  function syncThreadQueryWithSidebarClick(target: Element): void {
+    const conversationId = readSidebarThreadConversationId(target);
+    if (!conversationId) {
+      return;
+    }
+
+    setThreadQueryForConversation(conversationId);
+  }
+
+  function readSidebarThreadConversationId(target: Element): string | null {
+    const nearestAction = target.closest('button, a, [role="button"], [role="menuitem"]');
+    if (
+      nearestAction instanceof Element &&
+      nearestAction.getAttribute("data-app-action-sidebar-thread-row") === null &&
+      nearestAction.getAttribute("data-browser-sidebar-conversation-id") === null
+    ) {
+      return null;
+    }
+
+    const row = target.closest(
+      "[data-app-action-sidebar-thread-row], [data-browser-sidebar-conversation-id]",
+    );
+    if (!(row instanceof Element)) {
+      return null;
+    }
+
+    const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id")?.trim() ?? "";
+    if (hostId && hostId !== LOCAL_HOST_ID) {
+      return null;
+    }
+
+    const threadKind = row.getAttribute("data-app-action-sidebar-thread-kind")?.trim() ?? "";
+    if (threadKind && threadKind !== "local") {
+      return null;
+    }
+
+    return normalizeRestorableConversationId(
+      row.getAttribute("data-app-action-sidebar-thread-id") ??
+        row.getAttribute("data-browser-sidebar-conversation-id"),
+    );
   }
 
   function handleSidebarKeydown(event: KeyboardEvent): void {

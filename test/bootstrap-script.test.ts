@@ -3410,6 +3410,82 @@ describe("renderBootstrapScript", () => {
     expect(currentUrl.searchParams.get("initialRoute")).toBeNull();
   });
 
+  it("updates the thread query param when clicking a local sidebar thread row", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret&thread=thr_first",
+    });
+    const nav = harness.document.createElement("nav");
+    nav.setAttribute("role", "navigation");
+    const row = harness.document.createElement("div");
+    row.setAttribute("role", "button");
+    row.setAttribute("data-app-action-sidebar-thread-row", "true");
+    row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+    row.setAttribute("data-app-action-sidebar-thread-kind", "local");
+    row.setAttribute("data-app-action-sidebar-thread-id", "thr_second");
+    const title = harness.document.createElement("span");
+    title.setAttribute("data-app-action-sidebar-thread-title", "true");
+    row.appendChild(title);
+    nav.appendChild(row);
+    harness.document.body.appendChild(nav);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    harness.document.dispatchEvent(new TestMouseEvent("click", { target: title }));
+
+    const currentUrl = new URL(harness.windowObject.location.href);
+    expect(currentUrl.searchParams.get("token")).toBe("secret");
+    expect(currentUrl.searchParams.get("thread")).toBe("thr_second");
+  });
+
+  it("does not update the thread query param when clicking sidebar row actions", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      href: "http://127.0.0.1:8787/?token=secret&thread=thr_first",
+    });
+    const nav = harness.document.createElement("nav");
+    nav.setAttribute("role", "navigation");
+    const row = harness.document.createElement("div");
+    row.setAttribute("role", "button");
+    row.setAttribute("data-app-action-sidebar-thread-row", "true");
+    row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+    row.setAttribute("data-app-action-sidebar-thread-kind", "local");
+    row.setAttribute("data-app-action-sidebar-thread-id", "thr_second");
+    const archiveButton = harness.document.createElement("button");
+    archiveButton.setAttribute("aria-label", "Archive thread");
+    row.appendChild(archiveButton);
+    nav.appendChild(row);
+    harness.document.body.appendChild(nav);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    harness.document.dispatchEvent(new TestMouseEvent("click", { target: archiveButton }));
+
+    const currentUrl = new URL(harness.windowObject.location.href);
+    expect(currentUrl.searchParams.get("token")).toBe("secret");
+    expect(currentUrl.searchParams.get("thread")).toBe("thr_first");
+  });
+
   it("clears the thread query param for new-chat messages", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {
