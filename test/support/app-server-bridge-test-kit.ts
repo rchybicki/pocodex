@@ -279,6 +279,14 @@ export async function createBridge(
   });
 
   const { AppServerBridge } = await import("../../src/lib/app-server-bridge.js");
+  let codexHomePath = options.codexHomePath;
+  if (!codexHomePath && process.env.CODEX_HOME !== originalCodexHome) {
+    codexHomePath = process.env.CODEX_HOME;
+  }
+  if (!codexHomePath) {
+    codexHomePath = await mkdtemp(join(tmpdir(), "pocodex-codex-home-"));
+    tempDirs.push(codexHomePath);
+  }
   let workspaceRootRegistryPath = options.workspaceRootRegistryPath;
   if (!workspaceRootRegistryPath) {
     const tempDirectory = await mkdtemp(join(tmpdir(), "pocodex-workspace-roots-"));
@@ -289,7 +297,7 @@ export async function createBridge(
     appPath: "/Applications/Codex.app",
     codexCliPath: "/tmp/mock-codex",
     cwd: TEST_WORKSPACE_ROOT,
-    codexHomePath: options.codexHomePath,
+    codexHomePath,
     extensionInfo: options.extensionInfo,
     persistedAtomRegistryPath: options.persistedAtomRegistryPath,
     workspaceRootRegistryPath,
