@@ -2973,7 +2973,7 @@ describe("renderBootstrapScript", () => {
     expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("expanded");
   });
 
-  it("defaults the mobile sidebar to expanded when no host mode has been stored", async () => {
+  it("does not force-open the mobile sidebar from stored expanded mode", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {
         buildFlavor: "stable",
@@ -3011,7 +3011,8 @@ describe("renderBootstrapScript", () => {
     });
 
     drainTestTimers(harness.timers, 1);
-    expect(harness.dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
+    expect(harness.dispatchedMessages).not.toContainEqual({ type: "toggle-sidebar" });
+    expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("expanded");
   });
 
   it("persists mobile sidebar closes triggered from the content pane", async () => {
@@ -3070,6 +3071,58 @@ describe("renderBootstrapScript", () => {
     expect(toggleMessages).toHaveLength(1);
 
     expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("collapsed");
+  });
+
+  it("closes the mobile sidebar when the composer text input receives focus", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      mobile: true,
+      localStorageEntries: {
+        "pocodex-sidebar-mode": "expanded",
+      },
+    });
+    const navigation = harness.document.createElement("nav");
+    navigation.setAttribute("role", "navigation");
+    const contentPane = harness.document.createElement("div");
+    contentPane.setAttribute("class", "main-surface");
+    const composerInput = harness.document.createElement("textarea");
+    contentPane.appendChild(composerInput);
+    harness.document.body.appendChild(navigation);
+    harness.document.body.appendChild(contentPane);
+    setMobileSidebarOpenState(contentPane, navigation);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+
+    drainTestTimers(harness.timers);
+    harness.dispatchedMessages.length = 0;
+
+    harness.document.dispatchEvent({
+      type: "focusin",
+      target: composerInput,
+    });
+    for (let index = 0; index < 5; index += 1) {
+      if (
+        harness.dispatchedMessages.some(
+          (message) => JSON.stringify(message) === JSON.stringify({ type: "toggle-sidebar" }),
+        )
+      ) {
+        break;
+      }
+      drainTestTimers(harness.timers, 1);
+    }
+
+    expect(harness.dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
   });
 
   it("does not treat the mobile sidebar as open when the content pane has the collapsed class", async () => {

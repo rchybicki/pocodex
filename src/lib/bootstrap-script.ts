@@ -469,6 +469,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   function installMobileSidebarThreadNavigationClose(): void {
     document.addEventListener("click", handleMobileSidebarThreadClick, true);
     document.addEventListener("click", handleMobileContentPaneClick, true);
+    document.addEventListener("focusin", handleMobileContentPaneTextEntryFocus, true);
   }
 
   function installSidebarModePersistence(): void {
@@ -737,10 +738,32 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     scheduleMobileSidebarClose();
   }
 
+  function handleMobileContentPaneTextEntryFocus(event: FocusEvent): void {
+    if (!isMobileSidebarViewport()) {
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || !isTextEntryElement(target)) {
+      return;
+    }
+
+    if (target.closest('nav[role="navigation"]') || !target.closest(".main-surface")) {
+      return;
+    }
+
+    if (!isMobileSidebarOpen()) {
+      return;
+    }
+
+    scheduleMobileSidebarClose();
+  }
+
   function scheduleMobileSidebarClose(): void {
     window.setTimeout(() => {
       if (isMobileSidebarViewport() && isMobileSidebarOpen()) {
         armSidebarModeInteraction();
+        notePendingSidebarModeTarget("collapsed");
         dispatchHostMessage({ type: "toggle-sidebar" });
         scheduleSidebarModeReconcile(5);
       }
@@ -854,7 +877,6 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       return;
     }
 
-    const desiredMode = sidebarModeFromHost ?? "expanded";
     const currentMode = readSidebarMode();
     if (!currentMode) {
       if (retriesRemaining > 0) {
@@ -862,6 +884,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       }
       return;
     }
+    const desiredMode = getDesiredSidebarMode(currentMode);
 
     if (pendingSidebarModeTarget) {
       if (currentMode === pendingSidebarModeTarget) {
@@ -895,6 +918,9 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     if (currentMode === desiredMode) {
+      if (isSidebarModeInteractionArmed && sidebarModeFromHost !== currentMode) {
+        persistSidebarMode(currentMode);
+      }
       return;
     }
 
@@ -946,6 +972,14 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     return "collapsed";
+  }
+
+  function getDesiredSidebarMode(currentMode: SidebarMode): SidebarMode {
+    if (isMobileSidebarViewport()) {
+      return sidebarModeFromHost === "collapsed" ? "collapsed" : currentMode;
+    }
+
+    return sidebarModeFromHost ?? "expanded";
   }
 
   function readSidebarModeValue(value: unknown): SidebarMode | null {
