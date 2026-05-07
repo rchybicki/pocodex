@@ -169,6 +169,77 @@ describeAppServerBridge(({ children }) => {
     await bridge.close();
   });
 
+  it("marks externally active threads in thread list responses", async () => {
+    const bridge = await createBridge(children);
+    const emittedMessages: unknown[] = [];
+    bridge.on("bridge_message", (message) => {
+      emittedMessages.push(message);
+    });
+
+    const handleActivity = Reflect.get(bridge, "handleCodexSessionActivity") as (
+      activity: unknown,
+    ) => void;
+    handleActivity.call(bridge, {
+      active: true,
+      conversationId: "conv-active",
+      path: "/tmp/rollout-2026-05-07T12-02-29-conv-active.jsonl",
+      title: "pocodex",
+      updatedAtMs: Date.parse("2026-05-07T12:00:00.000Z"),
+    });
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "req-thread-list",
+        method: "thread/list",
+        params: {
+          limit: 10,
+        },
+      },
+    });
+
+    children.at(0)?.stdout.write(
+      `${JSON.stringify({
+        id: "req-thread-list",
+        result: {
+          data: [
+            {
+              id: "conv-active",
+              title: "pocodex",
+            },
+            {
+              id: "conv-idle",
+              title: "idle",
+            },
+          ],
+        },
+      })}\n`,
+    );
+
+    await waitForCondition(() =>
+      emittedMessages.some((message) => getMcpResponse([message], "req-thread-list")),
+    );
+
+    expect(getMcpJsonResult(emittedMessages, "req-thread-list")).toEqual({
+      data: [
+        {
+          id: "conv-active",
+          title: "pocodex",
+          status: {
+            type: "active",
+            activeFlags: [],
+          },
+        },
+        {
+          id: "conv-idle",
+          title: "idle",
+        },
+      ],
+    });
+
+    await bridge.close();
+  });
+
   it("converts plugin list artwork paths into data URLs", async () => {
     const pluginRoot = await mkdtemp(join(tmpdir(), "pocodex-plugin-root-"));
     tempDirs.push(pluginRoot);

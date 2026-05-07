@@ -844,6 +844,64 @@ describe("renderBootstrapScript", () => {
     ]);
   });
 
+  it("marks externally active threads and refreshes the open thread", async () => {
+    const conversationId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
+    const harness = createBootstrapHarness({
+      href: `http://127.0.0.1:8787/?thread=${conversationId}&token=secret`,
+    });
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+      importIconSvg: '<svg viewBox="0 0 1 1"></svg>',
+    });
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+    harness.emitServerEnvelope({
+      type: "bridge_message",
+      message: {
+        type: "pocodex-external-thread-activity",
+        active: true,
+        conversationId,
+        hostId: "local",
+        title: "pocodex",
+      },
+    });
+    drainTestTimers(harness.timers);
+
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "invalidate-thread-search",
+      hostId: "local",
+    });
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "navigate-to-route",
+      path: `/local/${conversationId}`,
+    });
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "thread-stream-resume-request",
+      hostId: "local",
+      conversationId,
+    });
+
+    harness.emitServerEnvelope({
+      type: "bridge_message",
+      message: {
+        type: "pocodex-external-thread-activity",
+        active: false,
+        conversationId,
+        hostId: "local",
+        title: "pocodex",
+      },
+    });
+    drainTestTimers(harness.timers);
+  });
+
   it("offers reconnect and reload actions from the connection status overlay", async () => {
     const harness = createBootstrapHarness({
       mobile: true,

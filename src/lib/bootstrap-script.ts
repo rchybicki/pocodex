@@ -137,6 +137,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   const HEARTBEAT_MONITOR_INTERVAL_MS = 5_000;
   const WAKE_GRACE_PERIOD_MS = 10_000;
   const RELOAD_REQUIRED_FAILURE_COUNT = 6;
+  const EXTERNAL_THREAD_RESTORE_DEBOUNCE_MS = 2_000;
   const NON_TEXT_INPUT_TYPES = new Set([
     "button",
     "checkbox",
@@ -165,6 +166,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     ["remote_connections", []],
   ]);
   const pendingMessages: string[] = [];
+  const lastExternalThreadRestoreByConversationId = new Map<string, number>();
   const toastHost = document.createElement("div");
   const statusHost = document.createElement("div");
   const importHost = document.createElement("div");
@@ -2548,6 +2550,11 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       return false;
     }
 
+    if (message.type === "pocodex-external-thread-activity") {
+      handleExternalThreadActivity(message);
+      return true;
+    }
+
     if (message.type === "pocodex-open-workspace-root-picker") {
       const context = message.context === "onboarding" ? "onboarding" : "manual";
       const initialPath = typeof message.initialPath === "string" ? message.initialPath : "";
@@ -2562,6 +2569,34 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     return false;
+  }
+
+  function handleExternalThreadActivity(message: Record<string, unknown>): void {
+    const conversationId =
+      typeof message.conversationId === "string" ? message.conversationId.trim() : "";
+    if (!conversationId) {
+      return;
+    }
+
+    dispatchHostMessage({
+      type: "invalidate-thread-search",
+      hostId: LOCAL_HOST_ID,
+    });
+
+    if (readCurrentConversationId() === conversationId) {
+      scheduleExternalThreadRestore(conversationId);
+    }
+  }
+
+  function scheduleExternalThreadRestore(conversationId: string): void {
+    const now = Date.now();
+    const lastRestoreAt = lastExternalThreadRestoreByConversationId.get(conversationId) ?? 0;
+    if (now - lastRestoreAt < EXTERNAL_THREAD_RESTORE_DEBOUNCE_MS) {
+      return;
+    }
+
+    lastExternalThreadRestoreByConversationId.set(conversationId, now);
+    scheduleThreadRestore(conversationId);
   }
 
   function normalizeBrowserUrlForRefresh(): void {
@@ -2596,6 +2631,15 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
 
   function readThreadQueryConversationId(url: URL = new URL(window.location.href)): string | null {
     return normalizeRestorableConversationId(url.searchParams.get(THREAD_QUERY_KEY));
+  }
+
+  function readCurrentConversationId(): string | null {
+    const currentUrl = new URL(window.location.href);
+    return (
+      readThreadQueryConversationId(currentUrl) ??
+      extractLocalConversationIdFromRoute(currentUrl.pathname) ??
+      extractLocalConversationIdFromRoute(readLegacyInitialRoute(currentUrl))
+    );
   }
 
   function readLegacyInitialRoute(url: URL = new URL(window.location.href)): string | null {

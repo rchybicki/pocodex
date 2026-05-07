@@ -10,6 +10,10 @@ import { createInterface } from "node:readline";
 import { ensureCodexCliBinary } from "./codex-bundle.js";
 import { deriveCodexHomePath } from "./codex-home.js";
 import {
+  CodexSessionActivityWatcher,
+  type CodexSessionActivity,
+} from "./codex-session-activity.js";
+import {
   DefaultCodexDesktopGitWorkerBridge,
   type CodexDesktopGitWorkerBridge,
 } from "./codex-desktop-git-worker.js";
@@ -294,6 +298,14 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
   private readonly persistedAtoms = new Map<string, unknown>();
   private readonly globalState = new Map<string, unknown>();
   private readonly pinnedThreadIds = new Set<string>();
+  private readonly externalThreadActivities = new Map<
+    string,
+    {
+      active: boolean;
+      title: string | null;
+      updatedAtMs: number;
+    }
+  >();
   private readonly sharedObjects = new Map<string, unknown>();
   private readonly sharedObjectSubscriptions = new Set<string>();
   private readonly workspaceRoots = new Set<string>();
@@ -302,6 +314,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
   private persistedAtomRegistryPath: string;
   private workspaceRootRegistryPath: string;
   private readonly gitWorkerBridge: CodexDesktopGitWorkerBridge;
+  private readonly sessionActivityWatcher: CodexSessionActivityWatcher;
   private activeWorkspaceRoot: string | null;
   private desktopImportPromptSeen = false;
   private persistedAtomWritePromise: Promise<void> = Promise.resolve();
@@ -354,6 +367,12 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
         this.emitBridgeMessage(message);
       },
     });
+    this.sessionActivityWatcher = new CodexSessionActivityWatcher({
+      codexHomePath: this.codexHomePath,
+      onActivity: (activity) => {
+        this.handleCodexSessionActivity(activity);
+      },
+    });
     this.syncWorkspaceGlobalState();
     const codexCliPath = options.codexCliPath;
     if (!codexCliPath) {
@@ -389,6 +408,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     this.fetchRequests.forEach((controller) => controller.abort());
     this.fetchRequests.clear();
     this.terminalManager.dispose();
+    this.sessionActivityWatcher.close();
     await this.gitWorkerBridge.close().catch((error) => {
       debugLog("git-worker", "failed to close desktop git worker bridge", {
         error: normalizeError(error).message,
@@ -430,7 +450,11 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
 
     switch (message.type) {
       case "ready":
+        this.sessionActivityWatcher.start();
         this.emitConnectionState();
+        void this.sessionActivityWatcher.pollNow().then(() => {
+          this.sessionActivityWatcher.emitKnownActiveActivities();
+        });
         return;
       case "log-message":
       case "view-focused":
@@ -1217,6 +1241,8 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
 
   private async normalizeForwardedMcpResult(method: string, result: unknown): Promise<unknown> {
     switch (method) {
+      case "thread/list":
+        return this.normalizeThreadListResult(result);
       case "plugin/list":
         return this.normalizePluginListResult(result);
       case "plugin/read":
@@ -1224,6 +1250,46 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       default:
         return result;
     }
+  }
+
+  private normalizeThreadListResult(result: unknown): unknown {
+    if (!isJsonRecord(result)) {
+      return result;
+    }
+
+    const normalized = { ...result };
+    if (Array.isArray(normalized.data)) {
+      normalized.data = normalized.data.map((thread) => this.normalizeThreadListItem(thread));
+    }
+    if (Array.isArray(normalized.threads)) {
+      normalized.threads = normalized.threads.map((thread) => this.normalizeThreadListItem(thread));
+    }
+
+    return normalized;
+  }
+
+  private normalizeThreadListItem(thread: unknown): unknown {
+    if (!isJsonRecord(thread)) {
+      return thread;
+    }
+
+    const conversationId = typeof thread.id === "string" ? thread.id : null;
+    if (!conversationId) {
+      return thread;
+    }
+
+    const activity = this.externalThreadActivities.get(conversationId);
+    if (!activity?.active) {
+      return thread;
+    }
+
+    return {
+      ...thread,
+      status: {
+        type: "active",
+        activeFlags: [],
+      },
+    };
   }
 
   private async normalizePluginListResult(result: unknown): Promise<unknown> {
@@ -3040,6 +3106,24 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
 
   private emitBridgeMessage(message: JsonRecord): void {
     this.emit("bridge_message", message);
+  }
+
+  private handleCodexSessionActivity(activity: CodexSessionActivity): void {
+    this.externalThreadActivities.set(activity.conversationId, {
+      active: activity.active,
+      title: activity.title,
+      updatedAtMs: activity.updatedAtMs,
+    });
+    this.emitBridgeMessage({
+      type: "pocodex-external-thread-activity",
+      active: activity.active,
+      conversationId: activity.conversationId,
+      hostId: this.hostId,
+      path: activity.path,
+      title: activity.title,
+      updatedAt: new Date(activity.updatedAtMs).toISOString(),
+      updatedAtMs: activity.updatedAtMs,
+    });
   }
 
   private sendJsonRpcMessage(message: JsonRecord): void {
