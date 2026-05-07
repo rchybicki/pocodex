@@ -138,6 +138,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   const WAKE_GRACE_PERIOD_MS = 10_000;
   const RELOAD_REQUIRED_FAILURE_COUNT = 6;
   const EXTERNAL_THREAD_RESTORE_DEBOUNCE_MS = 2_000;
+  const EXTERNAL_THREAD_SELECTED_REFRESH_INTERVAL_MS = 10_000;
   const NON_TEXT_INPUT_TYPES = new Set([
     "button",
     "checkbox",
@@ -167,10 +168,14 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   ]);
   const pendingMessages: string[] = [];
   const lastExternalThreadRestoreByConversationId = new Map<string, number>();
+  const lastExternalThreadSelectedRefreshByConversationId = new Map<string, number>();
+  const activeExternalThreadIds = new Set<string>();
   const toastHost = document.createElement("div");
   const statusHost = document.createElement("div");
   const importHost = document.createElement("div");
   const workspaceRootPickerHost = document.createElement("div");
+
+  installCryptoRandomUuidFallback();
 
   let socket: WebSocket | null = null;
   let isConnecting = false;
@@ -189,6 +194,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   let connectionPhase: ConnectionPhase = "reconnecting";
   let reconnectTimer: number | null = null;
   let heartbeatMonitorTimer: number | null = null;
+  let externalThreadSelectedRefreshTimer: number | null = null;
   let lastServerHeartbeatAt = 0;
   let wakeGraceDeadline = 0;
   let pendingManualReconnect = false;
@@ -2545,6 +2551,55 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     return !NON_TEXT_INPUT_TYPES.has(inputType);
   }
 
+  function installCryptoRandomUuidFallback(): void {
+    const randomUUID = (): string => {
+      const bytes = new Uint8Array(16);
+      const cryptoLike = window.crypto;
+      if (cryptoLike && typeof cryptoLike.getRandomValues === "function") {
+        cryptoLike.getRandomValues(bytes);
+      } else {
+        for (let index = 0; index < bytes.length; index += 1) {
+          bytes[index] = Math.floor(Math.random() * 256);
+        }
+      }
+
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+      return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
+        .slice(6, 8)
+        .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+    };
+
+    const cryptoLike = window.crypto as (Crypto & { randomUUID?: () => string }) | undefined;
+    if (typeof cryptoLike?.randomUUID === "function") {
+      return;
+    }
+
+    if (cryptoLike) {
+      try {
+        Object.defineProperty(cryptoLike, "randomUUID", {
+          configurable: true,
+          value: randomUUID,
+        });
+        return;
+      } catch {
+        // Fall through to replacing the window property below.
+      }
+    }
+
+    try {
+      Object.defineProperty(window, "crypto", {
+        configurable: true,
+        value: {
+          randomUUID,
+        },
+      });
+    } catch {
+      // If the browser refuses the shim, the app will surface its own runtime error.
+    }
+  }
+
   function handlePocodexBridgeMessage(message: unknown): boolean {
     if (!isRecord(message) || typeof message.type !== "string") {
       return false;
@@ -2578,14 +2633,53 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
       return;
     }
 
+    const isActive = message.active === true;
+    if (isActive) {
+      activeExternalThreadIds.add(conversationId);
+    } else {
+      activeExternalThreadIds.delete(conversationId);
+    }
+    syncExternalThreadSelectedRefreshTimer();
+
     dispatchHostMessage({
       type: "invalidate-thread-search",
       hostId: LOCAL_HOST_ID,
     });
 
     if (readCurrentConversationId() === conversationId) {
-      scheduleExternalThreadRestore(conversationId);
+      if (isActive) {
+        scheduleExternalThreadRestore(conversationId);
+        refreshSelectedExternalThread(conversationId, EXTERNAL_THREAD_SELECTED_REFRESH_INTERVAL_MS);
+      } else {
+        refreshSelectedExternalThread(conversationId, EXTERNAL_THREAD_RESTORE_DEBOUNCE_MS);
+      }
     }
+  }
+
+  function syncExternalThreadSelectedRefreshTimer(): void {
+    if (activeExternalThreadIds.size === 0) {
+      if (externalThreadSelectedRefreshTimer !== null) {
+        window.clearTimeout(externalThreadSelectedRefreshTimer);
+        externalThreadSelectedRefreshTimer = null;
+      }
+      return;
+    }
+
+    if (externalThreadSelectedRefreshTimer !== null) {
+      return;
+    }
+
+    externalThreadSelectedRefreshTimer = window.setTimeout(() => {
+      externalThreadSelectedRefreshTimer = null;
+      const conversationId = readCurrentConversationId();
+      if (conversationId && activeExternalThreadIds.has(conversationId)) {
+        refreshSelectedExternalThread(conversationId, EXTERNAL_THREAD_SELECTED_REFRESH_INTERVAL_MS);
+      }
+
+      if (activeExternalThreadIds.size > 0) {
+        syncExternalThreadSelectedRefreshTimer();
+      }
+    }, EXTERNAL_THREAD_SELECTED_REFRESH_INTERVAL_MS);
   }
 
   function scheduleExternalThreadRestore(conversationId: string): void {
@@ -2597,6 +2691,21 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
 
     lastExternalThreadRestoreByConversationId.set(conversationId, now);
     scheduleThreadRestore(conversationId);
+  }
+
+  function refreshSelectedExternalThread(conversationId: string, minIntervalMs: number): void {
+    const now = Date.now();
+    const lastRefreshAt =
+      lastExternalThreadSelectedRefreshByConversationId.get(conversationId) ?? 0;
+    if (now - lastRefreshAt < minIntervalMs) {
+      return;
+    }
+
+    lastExternalThreadSelectedRefreshByConversationId.set(conversationId, now);
+    dispatchHostMessage({
+      type: "codex-app-server-initialized",
+      hostId: LOCAL_HOST_ID,
+    });
   }
 
   function normalizeBrowserUrlForRefresh(): void {

@@ -1243,6 +1243,9 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     switch (method) {
       case "thread/list":
         return this.normalizeThreadListResult(result);
+      case "thread/read":
+      case "thread/resume":
+        return this.normalizeThreadDetailResult(result);
       case "plugin/list":
         return this.normalizePluginListResult(result);
       case "plugin/read":
@@ -1290,6 +1293,62 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
         activeFlags: [],
       },
     };
+  }
+
+  private normalizeThreadDetailResult(result: unknown): unknown {
+    if (!isJsonRecord(result) || !isJsonRecord(result.thread)) {
+      return result;
+    }
+
+    const thread = this.normalizeExternallyActiveThread(result.thread);
+    if (thread === result.thread) {
+      return result;
+    }
+
+    return {
+      ...result,
+      thread,
+    };
+  }
+
+  private normalizeExternallyActiveThread(thread: JsonRecord): unknown {
+    const conversationId = typeof thread.id === "string" ? thread.id : null;
+    if (!conversationId || !this.externalThreadActivities.get(conversationId)?.active) {
+      return thread;
+    }
+
+    const normalized: JsonRecord = {
+      ...thread,
+      status: {
+        type: "active",
+        activeFlags: [],
+      },
+    };
+
+    if (Array.isArray(thread.turns)) {
+      normalized.turns = this.normalizeExternallyActiveTurns(thread.turns);
+    }
+
+    return normalized;
+  }
+
+  private normalizeExternallyActiveTurns(turns: unknown[]): unknown[] {
+    const lastTurnIndex = turns.findLastIndex((turn) => isJsonRecord(turn));
+    if (lastTurnIndex < 0) {
+      return turns;
+    }
+
+    return turns.map((turn, index) => {
+      if (index !== lastTurnIndex || !isJsonRecord(turn)) {
+        return turn;
+      }
+
+      return {
+        ...turn,
+        completedAt: null,
+        status: "inProgress",
+      };
+    });
   }
 
   private async normalizePluginListResult(result: unknown): Promise<unknown> {

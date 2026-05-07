@@ -240,6 +240,85 @@ describeAppServerBridge(({ children }) => {
     await bridge.close();
   });
 
+  it("marks externally active focused thread payloads as running", async () => {
+    const bridge = await createBridge(children);
+    const emittedMessages: unknown[] = [];
+    bridge.on("bridge_message", (message) => {
+      emittedMessages.push(message);
+    });
+
+    const handleActivity = Reflect.get(bridge, "handleCodexSessionActivity") as (
+      activity: unknown,
+    ) => void;
+    handleActivity.call(bridge, {
+      active: true,
+      conversationId: "conv-active",
+      path: "/tmp/rollout-2026-05-07T12-02-29-conv-active.jsonl",
+      title: "pocodex",
+      updatedAtMs: Date.parse("2026-05-07T12:00:00.000Z"),
+    });
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "req-thread-read",
+        method: "thread/read",
+        params: {
+          includeTurns: true,
+          threadId: "conv-active",
+        },
+      },
+    });
+
+    children.at(0)?.stdout.write(
+      `${JSON.stringify({
+        id: "req-thread-read",
+        result: {
+          thread: {
+            id: "conv-active",
+            name: "pocodex",
+            status: {
+              type: "idle",
+            },
+            turns: [
+              {
+                completedAt: 1_778_163_540,
+                id: "turn-1",
+                items: [],
+                status: "completed",
+              },
+            ],
+          },
+        },
+      })}\n`,
+    );
+
+    await waitForCondition(() =>
+      emittedMessages.some((message) => getMcpResponse([message], "req-thread-read")),
+    );
+
+    expect(getMcpJsonResult(emittedMessages, "req-thread-read")).toEqual({
+      thread: {
+        id: "conv-active",
+        name: "pocodex",
+        status: {
+          type: "active",
+          activeFlags: [],
+        },
+        turns: [
+          {
+            completedAt: null,
+            id: "turn-1",
+            items: [],
+            status: "inProgress",
+          },
+        ],
+      },
+    });
+
+    await bridge.close();
+  });
+
   it("converts plugin list artwork paths into data URLs", async () => {
     const pluginRoot = await mkdtemp(join(tmpdir(), "pocodex-plugin-root-"));
     tempDirs.push(pluginRoot);

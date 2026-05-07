@@ -844,6 +844,30 @@ describe("renderBootstrapScript", () => {
     ]);
   });
 
+  it("installs crypto.randomUUID fallback for non-secure browser origins", () => {
+    const harness = createBootstrapHarness();
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+      importIconSvg: '<svg viewBox="0 0 1 1"></svg>',
+    });
+
+    harness.run(script);
+
+    const cryptoLike = Reflect.get(harness.windowObject, "crypto") as
+      | { randomUUID?: () => string }
+      | undefined;
+    expect(typeof cryptoLike?.randomUUID).toBe("function");
+    expect(cryptoLike?.randomUUID?.()).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
   it("marks externally active threads and refreshes the open thread", async () => {
     const conversationId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
     const harness = createBootstrapHarness({
@@ -887,6 +911,10 @@ describe("renderBootstrapScript", () => {
       type: "thread-stream-resume-request",
       hostId: "local",
       conversationId,
+    });
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "codex-app-server-initialized",
+      hostId: "local",
     });
 
     harness.emitServerEnvelope({
