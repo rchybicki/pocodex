@@ -2683,7 +2683,6 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     if (readCurrentConversationId() === conversationId) {
       if (isActive) {
         scheduleExternalThreadRestore(conversationId);
-        refreshSelectedExternalThread(conversationId, EXTERNAL_THREAD_SELECTED_REFRESH_INTERVAL_MS);
       } else {
         refreshSelectedExternalThread(conversationId, EXTERNAL_THREAD_RESTORE_DEBOUNCE_MS);
       }
@@ -2737,8 +2736,9 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
 
     lastExternalThreadSelectedRefreshByConversationId.set(conversationId, now);
     dispatchHostMessage({
-      type: "codex-app-server-initialized",
+      type: "thread-stream-resume-request",
       hostId: LOCAL_HOST_ID,
+      conversationId,
     });
   }
 

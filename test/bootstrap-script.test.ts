@@ -912,7 +912,7 @@ describe("renderBootstrapScript", () => {
       hostId: "local",
       conversationId,
     });
-    expect(harness.dispatchedMessages).toContainEqual({
+    expect(harness.dispatchedMessages).not.toContainEqual({
       type: "codex-app-server-initialized",
       hostId: "local",
     });
@@ -928,6 +928,76 @@ describe("renderBootstrapScript", () => {
       },
     });
     drainTestTimers(harness.timers);
+  });
+
+  it("refreshes the selected externally active thread without replaying app-server initialization", async () => {
+    const selectedConversationId = "019e01e3-877b-73a1-a51a-68717c50a0fb";
+    const firstConversationId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
+    const harness = createBootstrapHarness({
+      href: `http://127.0.0.1:8787/?thread=${selectedConversationId}&token=secret`,
+    });
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+      importIconSvg: '<svg viewBox="0 0 1 1"></svg>',
+    });
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+    for (const conversationId of [firstConversationId, selectedConversationId]) {
+      harness.emitServerEnvelope({
+        type: "bridge_message",
+        message: {
+          type: "pocodex-external-thread-activity",
+          active: true,
+          conversationId,
+          hostId: "local",
+          title: conversationId,
+        },
+      });
+    }
+    harness.dispatchedMessages.length = 0;
+
+    for (let index = 0; index < 5; index += 1) {
+      if (
+        harness.dispatchedMessages.some(
+          (message) =>
+            JSON.stringify(message) ===
+            JSON.stringify({
+              type: "thread-stream-resume-request",
+              hostId: "local",
+              conversationId: selectedConversationId,
+            }),
+        )
+      ) {
+        break;
+      }
+      drainTestTimers(harness.timers, 1);
+    }
+
+    expect(harness.dispatchedMessages).toContainEqual({
+      type: "thread-stream-resume-request",
+      hostId: "local",
+      conversationId: selectedConversationId,
+    });
+    expect(harness.dispatchedMessages).not.toContainEqual({
+      type: "thread-stream-resume-request",
+      hostId: "local",
+      conversationId: firstConversationId,
+    });
+    expect(harness.dispatchedMessages).not.toContainEqual({
+      type: "codex-app-server-initialized",
+      hostId: "local",
+    });
+    expect(new URL(harness.windowObject.location.href).searchParams.get("thread")).toBe(
+      selectedConversationId,
+    );
   });
 
   it("offers reconnect and reload actions from the connection status overlay", async () => {
