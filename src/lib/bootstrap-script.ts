@@ -71,6 +71,9 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   };
 
   type WorkspaceRootDialogMode = "add" | "pick";
+  type ThreadRestoreOptions = {
+    navigate?: boolean;
+  };
 
   type WorkspaceRootAddResult = {
     success: boolean;
@@ -215,6 +218,8 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   let pendingSidebarModeTarget: SidebarMode | null = null;
   let pendingSidebarModeTargetUntil = 0;
   let mobileSidebarCloseTimer: number | null = null;
+  let activeMobileTextEntryComposer: Element | null = null;
+  let mobileTextEntryClearTimer: number | null = null;
   let settingsShellObserver: MutationObserver | null = null;
   let workspaceRootPickerState: WorkspaceRootPickerState | null = null;
   let selectedWorkspaceRoot: string | null = null;
@@ -232,6 +237,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
   syncRouteDataset();
   installRoutePersistence();
   installEnterBehaviorOverrideObservers();
+  installMobileTextEntryViewportStabilizer();
 
   runWhenDocumentReady(() => {
     ensureStylesheetLink(config.stylesheetHref);
@@ -546,6 +552,14 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     document.addEventListener("focusin", handleMobileContentPaneTextEntryFocus, true);
   }
 
+  function installMobileTextEntryViewportStabilizer(): void {
+    document.addEventListener("focusin", handleMobileTextEntryViewportFocus, true);
+    document.addEventListener("focusout", handleMobileTextEntryViewportBlur, true);
+    window.addEventListener("resize", syncMobileTextEntryViewportInset);
+    window.visualViewport?.addEventListener("resize", syncMobileTextEntryViewportInset);
+    window.visualViewport?.addEventListener("scroll", syncMobileTextEntryViewportInset);
+  }
+
   function installSidebarModePersistence(): void {
     sidebarModeFromHost = readSidebarModeFromBrowserStorage();
     hasReceivedSidebarModeSync = sidebarModeFromHost !== null;
@@ -642,6 +656,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     if (target) {
       syncThreadQueryWithSidebarClick(target);
       armSidebarModeInteractionIfToggleTrigger(target);
+      scheduleMobileSidebarToggleFallback(target);
     }
   }
 
@@ -874,6 +889,95 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     }
 
     scheduleMobileSidebarClose();
+  }
+
+  function handleMobileTextEntryViewportFocus(event: FocusEvent): void {
+    if (!isMobileSidebarViewport()) {
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || !isTextEntryElement(target)) {
+      return;
+    }
+
+    if (target.closest('nav[role="navigation"]') || !target.closest(".main-surface")) {
+      return;
+    }
+
+    if (mobileTextEntryClearTimer !== null) {
+      window.clearTimeout(mobileTextEntryClearTimer);
+      mobileTextEntryClearTimer = null;
+    }
+
+    const composer = findMobileTextEntryComposerRoot(target);
+    if (activeMobileTextEntryComposer && activeMobileTextEntryComposer !== composer) {
+      delete (activeMobileTextEntryComposer as HTMLElement).dataset.pocodexMobileComposer;
+    }
+
+    activeMobileTextEntryComposer = composer;
+    document.documentElement.dataset.pocodexMobileTextEntryFocused = "true";
+    (composer as HTMLElement).dataset.pocodexMobileComposer = "active";
+    syncMobileTextEntryViewportInset();
+  }
+
+  function handleMobileTextEntryViewportBlur(_event: FocusEvent): void {
+    if (mobileTextEntryClearTimer !== null) {
+      window.clearTimeout(mobileTextEntryClearTimer);
+    }
+
+    mobileTextEntryClearTimer = window.setTimeout(() => {
+      mobileTextEntryClearTimer = null;
+      clearMobileTextEntryViewportState();
+    }, 250);
+  }
+
+  function findMobileTextEntryComposerRoot(textEntry: Element): Element {
+    const mainSurface = textEntry.closest(".main-surface");
+    let current = textEntry.parentElement;
+    let fallback: Element = textEntry;
+
+    while (current && current !== mainSurface) {
+      fallback = current;
+      if (current.querySelector("button")) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    return fallback;
+  }
+
+  function syncMobileTextEntryViewportInset(): void {
+    if (!document.documentElement.dataset.pocodexMobileTextEntryFocused) {
+      return;
+    }
+
+    const keyboardInset = Math.round(getSoftKeyboardViewportInset() ?? 0);
+    setDocumentElementStyleProperty("--pocodex-soft-keyboard-inset", `${keyboardInset}px`);
+  }
+
+  function clearMobileTextEntryViewportState(): void {
+    delete document.documentElement.dataset.pocodexMobileTextEntryFocused;
+    setDocumentElementStyleProperty("--pocodex-soft-keyboard-inset", "0px");
+
+    if (activeMobileTextEntryComposer) {
+      delete (activeMobileTextEntryComposer as HTMLElement).dataset.pocodexMobileComposer;
+      activeMobileTextEntryComposer = null;
+    }
+  }
+
+  function setDocumentElementStyleProperty(name: string, value: string): void {
+    const style = document.documentElement.style as CSSStyleDeclaration &
+      Record<string, string> & {
+        setProperty?: (property: string, value: string) => void;
+      };
+    if (typeof style.setProperty === "function") {
+      style.setProperty(name, value);
+      return;
+    }
+
+    style[name] = value;
   }
 
   function scheduleMobileSidebarClose(delayMs = 0): void {
@@ -1182,14 +1286,63 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     pendingSidebarModeTargetUntil = 0;
   }
 
-  function isSidebarToggleTrigger(element: Element): boolean {
-    const ariaLabel = element.getAttribute("aria-label")?.trim().toLowerCase() ?? "";
-    if (ariaLabel === "hide sidebar" || ariaLabel === "show sidebar") {
-      return true;
+  function scheduleMobileSidebarToggleFallback(target: Element): void {
+    if (!isMobileSidebarViewport()) {
+      return;
     }
 
-    const title = element.getAttribute("title")?.trim().toLowerCase() ?? "";
-    return title === "hide sidebar" || title === "show sidebar";
+    const nearestInteractive = target.closest('button, a, [role="button"]');
+    if (!(nearestInteractive instanceof Element)) {
+      return;
+    }
+
+    const desiredMode = readSidebarToggleDesiredMode(nearestInteractive);
+    if (!desiredMode) {
+      return;
+    }
+
+    persistSidebarMode(desiredMode);
+    notePendingSidebarModeTarget(desiredMode);
+
+    window.setTimeout(() => {
+      if (!isMobileSidebarViewport()) {
+        return;
+      }
+
+      const currentMode = readSidebarMode();
+      if (!currentMode || currentMode === desiredMode) {
+        return;
+      }
+
+      armSidebarModeInteraction();
+      notePendingSidebarModeTarget(desiredMode);
+      dispatchHostMessage({ type: "toggle-sidebar" });
+      scheduleSidebarModeReconcile(5);
+    }, 180);
+  }
+
+  function readSidebarToggleDesiredMode(element: Element): SidebarMode | null {
+    const label = readSidebarToggleLabel(element);
+    if (label === "hide sidebar") {
+      return "collapsed";
+    }
+    if (label === "show sidebar") {
+      return "expanded";
+    }
+    return null;
+  }
+
+  function isSidebarToggleTrigger(element: Element): boolean {
+    return readSidebarToggleDesiredMode(element) !== null;
+  }
+
+  function readSidebarToggleLabel(element: Element): string {
+    const ariaLabel = element.getAttribute("aria-label")?.trim().toLowerCase() ?? "";
+    if (ariaLabel) {
+      return ariaLabel;
+    }
+
+    return element.getAttribute("title")?.trim().toLowerCase() ?? "";
   }
 
   function isSidebarToggleShortcut(event: KeyboardEvent): boolean {
@@ -3270,21 +3423,23 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
     scheduleThreadRestore(conversationId);
   }
 
-  function scheduleThreadRestoreFromUrl(): void {
+  function scheduleThreadRestoreFromUrl(options: ThreadRestoreOptions = {}): void {
     const conversationId = readThreadQueryConversationId();
     if (!conversationId) {
       return;
     }
 
-    scheduleThreadRestore(conversationId);
+    scheduleThreadRestore(conversationId, options);
   }
 
-  function scheduleThreadRestore(conversationId: string): void {
+  function scheduleThreadRestore(conversationId: string, options: ThreadRestoreOptions = {}): void {
     window.setTimeout(() => {
-      dispatchHostMessage({
-        type: "navigate-to-route",
-        path: buildLocalConversationRoute(conversationId),
-      });
+      if (options.navigate !== false) {
+        dispatchHostMessage({
+          type: "navigate-to-route",
+          path: buildLocalConversationRoute(conversationId),
+        });
+      }
       dispatchHostMessage({
         type: "thread-stream-resume-request",
         hostId: LOCAL_HOST_ID,
@@ -3300,7 +3455,7 @@ function bootstrapPocodexInBrowser(config: BootstrapScriptConfig): void {
         type: "ready",
       },
     });
-    scheduleThreadRestoreFromUrl();
+    scheduleThreadRestoreFromUrl({ navigate: false });
     replayRestorableTerminalAttachments();
   }
 

@@ -295,7 +295,13 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       reject: (reason?: unknown) => void;
     }
   >();
-  private readonly pendingMcpRequestMethods = new Map<string, string>();
+  private readonly pendingMcpRequests = new Map<
+    string,
+    {
+      method: string;
+      params: unknown;
+    }
+  >();
   private readonly fetchRequests = new Map<string, AbortController>();
   private readonly persistedAtoms = new Map<string, unknown>();
   private readonly globalState = new Map<string, unknown>();
@@ -318,9 +324,12 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
   private readonly gitWorkerBridge: CodexDesktopGitWorkerBridge;
   private readonly sessionActivityWatcher: CodexSessionActivityWatcher;
   private readonly nativeCodexRefresh: NativeCodexRefreshQueue | null;
+  private readonly nativeSessionRefreshActiveThreadIds = new Set<string>();
   private activeWorkspaceRoot: string | null;
   private desktopImportPromptSeen = false;
   private persistedAtomWritePromise: Promise<void> = Promise.resolve();
+  private hasCompletedNativeSessionRefreshWarmup = false;
+  private nativeSessionRefreshWarmupCompletedAtMs = Number.POSITIVE_INFINITY;
   private nextRequestId = 0;
   private isClosing = false;
   private isInitialized = false;
@@ -455,11 +464,25 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
 
     switch (message.type) {
       case "ready":
+        this.hasCompletedNativeSessionRefreshWarmup = false;
+        this.nativeSessionRefreshWarmupCompletedAtMs = Number.POSITIVE_INFINITY;
+        this.nativeSessionRefreshActiveThreadIds.clear();
         this.sessionActivityWatcher.start();
         this.emitConnectionState();
-        void this.sessionActivityWatcher.pollNow().then(() => {
-          this.sessionActivityWatcher.emitKnownActiveActivities();
-        });
+        void this.sessionActivityWatcher
+          .pollNow()
+          .then(() => {
+            this.sessionActivityWatcher.emitKnownActiveActivities();
+          })
+          .catch((error) => {
+            debugLog("session-activity", "failed to complete native refresh warmup", {
+              error: normalizeError(error).message,
+            });
+          })
+          .finally(() => {
+            this.hasCompletedNativeSessionRefreshWarmup = true;
+            this.nativeSessionRefreshWarmupCompletedAtMs = Date.now();
+          });
         return;
       case "log-message":
       case "view-focused":
@@ -1176,9 +1199,10 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       return;
     }
 
-    const requestMethod = id ? (this.pendingMcpRequestMethods.get(id) ?? null) : null;
+    const pendingRequest = id ? (this.pendingMcpRequests.get(id) ?? null) : null;
+    const requestMethod = pendingRequest?.method ?? null;
     if (id) {
-      this.pendingMcpRequestMethods.delete(id);
+      this.pendingMcpRequests.delete(id);
     }
 
     let normalizedResult = message.result;
@@ -1191,6 +1215,14 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
           method: requestMethod,
         });
       }
+    }
+
+    if (message.error === undefined && pendingRequest) {
+      this.queueNativeCodexRefreshForPocodexMutation(
+        pendingRequest.method,
+        pendingRequest.params,
+        message.result,
+      );
     }
 
     this.emit("bridge_message", {
@@ -1226,7 +1258,10 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     }
 
     if (message.request.id !== undefined) {
-      this.pendingMcpRequestMethods.set(String(message.request.id), message.request.method);
+      this.pendingMcpRequests.set(String(message.request.id), {
+        method: message.request.method,
+        params: message.request.params,
+      });
     }
 
     this.sendJsonRpcMessage({
@@ -1262,6 +1297,19 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       default:
         return result;
     }
+  }
+
+  private queueNativeCodexRefreshForPocodexMutation(
+    method: string,
+    params: unknown,
+    result: unknown,
+  ): void {
+    const threadId = readPocodexMutatedThreadId(method, params, result);
+    if (!threadId) {
+      return;
+    }
+
+    this.nativeCodexRefresh?.queueThreadRefresh(threadId, `pocodex ${method}`);
   }
 
   private normalizeThreadListResult(result: unknown): unknown {
@@ -2746,7 +2794,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
     const sanitized: JsonRecord = {};
 
     if (typeof params.threadId === "string") {
-      sanitized.threadId = params.threadId;
+      sanitized.threadId = normalizeLocalThreadId(params.threadId);
     }
     const resumePath = readExistingAbsoluteThreadPath(params.path);
     if (resumePath) {
@@ -3219,10 +3267,6 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       title: activity.title,
       updatedAtMs: activity.updatedAtMs,
     });
-    this.nativeCodexRefresh?.queueThreadRefresh(
-      activity.conversationId,
-      activity.active ? "active session activity" : "session activity",
-    );
     this.emitBridgeMessage({
       type: "pocodex-external-thread-activity",
       active: activity.active,
@@ -3233,6 +3277,32 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
       updatedAt: new Date(activity.updatedAtMs).toISOString(),
       updatedAtMs: activity.updatedAtMs,
     });
+
+    this.queueNativeCodexRefreshForSessionActivity(activity);
+  }
+
+  private queueNativeCodexRefreshForSessionActivity(activity: CodexSessionActivity): void {
+    if (!this.hasCompletedNativeSessionRefreshWarmup) {
+      return;
+    }
+
+    if (activity.active) {
+      this.nativeSessionRefreshActiveThreadIds.add(activity.conversationId);
+      this.nativeCodexRefresh?.queueThreadRefresh(activity.conversationId, "codex session active");
+      return;
+    }
+
+    if (this.nativeSessionRefreshActiveThreadIds.delete(activity.conversationId)) {
+      this.nativeCodexRefresh?.queueThreadRefresh(
+        activity.conversationId,
+        "codex session inactive",
+      );
+      return;
+    }
+
+    if (activity.updatedAtMs >= this.nativeSessionRefreshWarmupCompletedAtMs) {
+      this.nativeCodexRefresh?.queueThreadRefresh(activity.conversationId, "codex session changed");
+    }
   }
 
   private sendJsonRpcMessage(message: JsonRecord): void {
@@ -3266,7 +3336,7 @@ export class AppServerBridge extends EventEmitter implements HostBridge {
   private rejectPendingRequests(error: Error): void {
     this.localRequests.forEach(({ reject }) => reject(error));
     this.localRequests.clear();
-    this.pendingMcpRequestMethods.clear();
+    this.pendingMcpRequests.clear();
   }
 
   private listExistingPaths(body: unknown): string[] {
@@ -4804,6 +4874,92 @@ function readFetchErrorMessage(body: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function readPocodexMutatedThreadId(
+  method: string,
+  params: unknown,
+  result: unknown,
+): string | null {
+  switch (method) {
+    case "thread/start":
+      return null;
+    case "turn/start":
+      return hasThreadUserInput(params) ? (readThreadId(params) ?? readThreadId(result)) : null;
+    case "thread/resume":
+      return hasThreadUserInput(params) ? (readThreadId(params) ?? readThreadId(result)) : null;
+    case "thread/inject_items":
+    case "thread/compact/start":
+    case "thread/fork":
+    case "thread/rollback":
+      return readThreadId(params) ?? readThreadId(result);
+    default:
+      return null;
+  }
+}
+
+function normalizeLocalThreadId(threadId: string): string {
+  const trimmedThreadId = threadId.trim();
+  const localPrefix = "local/";
+  if (!trimmedThreadId.startsWith(localPrefix)) {
+    return trimmedThreadId;
+  }
+
+  const remainingThreadId = trimmedThreadId.slice(localPrefix.length);
+  const separatorIndex = remainingThreadId.search(/[/?#]/);
+  const encodedThreadId =
+    separatorIndex === -1 ? remainingThreadId : remainingThreadId.slice(0, separatorIndex);
+  if (!encodedThreadId) {
+    return trimmedThreadId;
+  }
+
+  try {
+    return decodeURIComponent(encodedThreadId);
+  } catch {
+    return encodedThreadId;
+  }
+}
+
+function hasThreadUserInput(value: unknown): boolean {
+  if (!isJsonRecord(value)) {
+    return false;
+  }
+
+  const input = value.input;
+  if (typeof input === "string") {
+    return input.trim().length > 0;
+  }
+  if (Array.isArray(input)) {
+    return input.length > 0;
+  }
+
+  const prompt = value.prompt;
+  if (typeof prompt === "string") {
+    return prompt.trim().length > 0;
+  }
+
+  const items = value.items;
+  return Array.isArray(items) && items.length > 0;
+}
+
+function readThreadId(value: unknown): string | null {
+  if (!isJsonRecord(value)) {
+    return null;
+  }
+
+  if (typeof value.threadId === "string" && value.threadId.trim().length > 0) {
+    return value.threadId;
+  }
+  if (typeof value.conversationId === "string" && value.conversationId.trim().length > 0) {
+    return value.conversationId;
+  }
+
+  const thread = isJsonRecord(value.thread) ? value.thread : null;
+  if (thread && typeof thread.id === "string" && thread.id.trim().length > 0) {
+    return thread.id;
+  }
+
+  return typeof value.id === "string" && value.id.trim().length > 0 ? value.id : null;
 }
 
 function uniqueStrings(values: unknown[]): string[] {

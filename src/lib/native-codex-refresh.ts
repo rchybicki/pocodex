@@ -64,8 +64,10 @@ export class NativeCodexRefreshController implements NativeCodexRefreshQueue {
   private readonly queuedThreadIds: string[] = [];
   private readonly queuedThreadIdSet = new Set<string>();
   private readonly nextAllowedRefreshAtMs = new Map<string, number>();
+  private drainTimer: ReturnType<typeof setTimeout> | null = null;
   private isClosed = false;
   private isRunning = false;
+  private nextGlobalRefreshAtMs = 0;
 
   constructor(options: NativeCodexRefreshControllerOptions = {}) {
     this.platform = options.platform ?? readPlatform();
@@ -131,6 +133,10 @@ export class NativeCodexRefreshController implements NativeCodexRefreshQueue {
     for (const timer of this.pendingTimers.values()) {
       this.clearTimer(timer);
     }
+    if (this.drainTimer) {
+      this.clearTimer(this.drainTimer);
+      this.drainTimer = null;
+    }
     this.pendingTimers.clear();
     this.queuedThreadIds.length = 0;
     this.queuedThreadIdSet.clear();
@@ -143,6 +149,24 @@ export class NativeCodexRefreshController implements NativeCodexRefreshQueue {
 
     this.queuedThreadIds.push(threadId);
     this.queuedThreadIdSet.add(threadId);
+    this.scheduleDrainQueue();
+  }
+
+  private scheduleDrainQueue(): void {
+    if (this.isClosed || this.isRunning || this.drainTimer || this.queuedThreadIds.length === 0) {
+      return;
+    }
+
+    const delayMs = Math.max(0, this.nextGlobalRefreshAtMs - this.now());
+    if (delayMs > 0) {
+      this.drainTimer = this.setTimer(() => {
+        this.drainTimer = null;
+        void this.drainQueue();
+      }, delayMs);
+      this.drainTimer.unref?.();
+      return;
+    }
+
     void this.drainQueue();
   }
 
@@ -153,25 +177,25 @@ export class NativeCodexRefreshController implements NativeCodexRefreshQueue {
 
     this.isRunning = true;
     try {
-      while (!this.isClosed) {
-        const threadId = this.queuedThreadIds.shift();
-        if (!threadId) {
-          return;
-        }
-        this.queuedThreadIdSet.delete(threadId);
-        this.nextAllowedRefreshAtMs.set(threadId, this.now() + this.minRefreshIntervalMs);
-
-        try {
-          await this.refreshThread(threadId);
-        } catch (error) {
-          debugLog("native-refresh", "failed to refresh native Codex thread", {
-            error: error instanceof Error ? error.message : String(error),
-            threadId,
-          });
-        }
+      const threadId = this.queuedThreadIds.shift();
+      if (!threadId) {
+        return;
       }
+      this.queuedThreadIdSet.delete(threadId);
+      this.nextAllowedRefreshAtMs.set(threadId, this.now() + this.minRefreshIntervalMs);
+
+      try {
+        await this.refreshThread(threadId);
+      } catch (error) {
+        debugLog("native-refresh", "failed to refresh native Codex thread", {
+          error: error instanceof Error ? error.message : String(error),
+          threadId,
+        });
+      }
+      this.nextGlobalRefreshAtMs = this.now() + this.minRefreshIntervalMs;
     } finally {
       this.isRunning = false;
+      this.scheduleDrainQueue();
     }
   }
 

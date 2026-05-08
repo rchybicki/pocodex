@@ -212,7 +212,7 @@ async function parseServeCommand(argv: string[]): Promise<ServeCommandOptions> {
     ? false
     : hasFlag(argv, "--native-refresh")
       ? true
-      : (nativeRefreshEnv ?? process.platform === "darwin");
+      : (nativeRefreshEnv ?? false);
   const token = readFlag(argv, "--token") ?? "";
   const devMode = hasFlag(argv, "--dev");
 

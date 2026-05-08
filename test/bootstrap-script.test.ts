@@ -553,6 +553,8 @@ function createBootstrapHarness(
     href?: string;
     localStorageEntries?: Record<string, string>;
     mobile?: boolean;
+    innerHeight?: number;
+    visualViewportHeight?: number;
   } = {},
 ) {
   const href = options.href ?? "http://127.0.0.1:8787/?token=secret";
@@ -621,6 +623,8 @@ function createBootstrapHarness(
       removeItem: (key: string) => void;
     };
     innerWidth: number;
+    innerHeight: number;
+    visualViewport?: TestEventTargetLike & { height: number };
     locationReloaded: boolean;
   };
 
@@ -701,6 +705,12 @@ function createBootstrapHarness(
     },
   };
   windowObject.innerWidth = options.mobile === true ? 390 : 1280;
+  windowObject.innerHeight = options.innerHeight ?? (options.mobile === true ? 844 : 900);
+  if (typeof options.visualViewportHeight === "number") {
+    windowObject.visualViewport = Object.assign(new TestEventTargetLike(), {
+      height: options.visualViewportHeight,
+    });
+  }
   windowObject.locationReloaded = false;
 
   const originalWindowDispatchEvent = windowObject.dispatchEvent.bind(windowObject);
@@ -3131,6 +3141,100 @@ describe("renderBootstrapScript", () => {
     expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("expanded");
   });
 
+  it("falls back when the mobile hide-sidebar toolbar click does not close the shell", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      mobile: true,
+      localStorageEntries: {
+        "pocodex-sidebar-mode": "expanded",
+      },
+    });
+    const navigation = harness.document.createElement("nav");
+    navigation.setAttribute("role", "navigation");
+    const contentPane = harness.document.createElement("div");
+    contentPane.setAttribute("class", "main-surface");
+    const toggleButton = harness.document.createElement("button");
+    toggleButton.setAttribute("aria-label", "Hide sidebar");
+    harness.document.body.appendChild(navigation);
+    harness.document.body.appendChild(contentPane);
+    harness.document.body.appendChild(toggleButton);
+    setMobileSidebarOpenState(contentPane, navigation);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+
+    drainTestTimers(harness.timers);
+    harness.dispatchedMessages.length = 0;
+
+    harness.document.dispatchEvent(new TestMouseEvent("click", { target: toggleButton }));
+    for (let index = 0; index < 5; index += 1) {
+      if (
+        harness.dispatchedMessages.some(
+          (message) => JSON.stringify(message) === JSON.stringify({ type: "toggle-sidebar" }),
+        )
+      ) {
+        break;
+      }
+      drainTestTimers(harness.timers, 1);
+    }
+
+    expect(harness.dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
+    expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("collapsed");
+  });
+
+  it("does not double-toggle when the mobile sidebar toolbar click already changed state", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      mobile: true,
+      localStorageEntries: {
+        "pocodex-sidebar-mode": "expanded",
+      },
+    });
+    const navigation = harness.document.createElement("nav");
+    navigation.setAttribute("role", "navigation");
+    const contentPane = harness.document.createElement("div");
+    contentPane.setAttribute("class", "main-surface");
+    const toggleButton = harness.document.createElement("button");
+    toggleButton.setAttribute("aria-label", "Hide sidebar");
+    harness.document.body.appendChild(navigation);
+    harness.document.body.appendChild(contentPane);
+    harness.document.body.appendChild(toggleButton);
+    setMobileSidebarOpenState(contentPane, navigation);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+    harness.openSocket();
+
+    drainTestTimers(harness.timers);
+    harness.dispatchedMessages.length = 0;
+
+    harness.document.dispatchEvent(new TestMouseEvent("click", { target: toggleButton }));
+    setMobileSidebarClosedState(contentPane, navigation);
+    drainTestTimers(harness.timers);
+
+    expect(harness.dispatchedMessages).not.toContainEqual({ type: "toggle-sidebar" });
+    expect(harness.getLocalStorageValue("pocodex-sidebar-mode")).toBe("collapsed");
+  });
+
   it("does not force-open the mobile sidebar from stored expanded mode", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {
@@ -3281,6 +3385,66 @@ describe("renderBootstrapScript", () => {
     }
 
     expect(harness.dispatchedMessages).toContainEqual({ type: "toggle-sidebar" });
+  });
+
+  it("tracks the mobile keyboard inset for the active composer during text entry", async () => {
+    const script = renderBootstrapScript({
+      sentryOptions: {
+        buildFlavor: "stable",
+        appVersion: "1",
+        buildNumber: "123",
+        codexAppSessionId: "session-id",
+      },
+      stylesheetHref: "/pocodex.css",
+    });
+
+    const harness = createBootstrapHarness({
+      mobile: true,
+      innerHeight: 844,
+      visualViewportHeight: 844,
+      localStorageEntries: {
+        "pocodex-sidebar-mode": "collapsed",
+      },
+    });
+    const contentPane = harness.document.createElement("div");
+    contentPane.setAttribute("class", "main-surface");
+    const composerRoot = harness.document.createElement("div");
+    const composerInput = harness.document.createElement("div");
+    composerInput.setAttribute("contenteditable", "true");
+    const composerButton = harness.document.createElement("button");
+    composerRoot.append(composerInput, composerButton);
+    contentPane.appendChild(composerRoot);
+    harness.document.body.appendChild(contentPane);
+
+    harness.run(script);
+    await flushBootstrapMicrotasks();
+
+    harness.document.dispatchEvent({
+      type: "focusin",
+      target: composerInput,
+    });
+
+    expect(harness.document.documentElement.dataset.pocodexMobileTextEntryFocused).toBe("true");
+    expect(composerRoot.dataset.pocodexMobileComposer).toBe("active");
+    expect(harness.document.documentElement.style["--pocodex-soft-keyboard-inset"]).toBe("0px");
+
+    if (!harness.windowObject.visualViewport) {
+      throw new Error("visualViewport was not installed in the harness");
+    }
+    harness.windowObject.visualViewport.height = 544;
+    harness.windowObject.visualViewport.dispatchEvent({ type: "resize" });
+
+    expect(harness.document.documentElement.style["--pocodex-soft-keyboard-inset"]).toBe("300px");
+
+    harness.document.dispatchEvent({
+      type: "focusout",
+      target: composerInput,
+    });
+    drainTestTimers(harness.timers);
+
+    expect(harness.document.documentElement.dataset.pocodexMobileTextEntryFocused).toBeUndefined();
+    expect(composerRoot.dataset.pocodexMobileComposer).toBeUndefined();
+    expect(harness.document.documentElement.style["--pocodex-soft-keyboard-inset"]).toBe("0px");
   });
 
   it("does not close the mobile sidebar when right-side panels narrow the composer", async () => {
@@ -4000,7 +4164,7 @@ describe("renderBootstrapScript", () => {
     expect(resumeRequests).toHaveLength(1);
   });
 
-  it("replays the local-thread restore sequence after a websocket reconnect", async () => {
+  it("resumes the local thread without route navigation after a websocket reconnect", async () => {
     const script = renderBootstrapScript({
       sentryOptions: {
         buildFlavor: "stable",
@@ -4062,7 +4226,7 @@ describe("renderBootstrapScript", () => {
         }),
     );
 
-    expect(navigateMessages).toHaveLength(2);
+    expect(navigateMessages).toHaveLength(1);
     expect(resumeRequests).toHaveLength(2);
     expect(harness.getSentEnvelopes()).toContainEqual({
       type: "bridge_message",

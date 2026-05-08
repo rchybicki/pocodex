@@ -240,7 +240,7 @@ describeAppServerBridge(({ children }) => {
     await bridge.close();
   });
 
-  it("queues native Codex refreshes for external thread activity", async () => {
+  it("queues native Codex refreshes from post-warmup session activity", async () => {
     const refreshes: Array<{ reason?: string; threadId: string }> = [];
     const nativeCodexRefresh = {
       close: () => {},
@@ -255,20 +255,199 @@ describeAppServerBridge(({ children }) => {
     const handleActivity = Reflect.get(bridge, "handleCodexSessionActivity") as (
       activity: unknown,
     ) => void;
+    const threadId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
     handleActivity.call(bridge, {
-      active: false,
-      conversationId: "019e01e3-877b-73a1-a51a-68717c50a0fa",
+      active: true,
+      conversationId: threadId,
+      path: "/tmp/rollout-2026-05-07T12-02-29-019e01e3-877b-73a1-a51a-68717c50a0fa.jsonl",
+      title: "pocodex",
+      updatedAtMs: Date.parse("2026-05-07T11:58:00.000Z"),
+    });
+
+    expect(refreshes).toEqual([]);
+
+    Reflect.set(bridge, "hasCompletedNativeSessionRefreshWarmup", true);
+    Reflect.set(
+      bridge,
+      "nativeSessionRefreshWarmupCompletedAtMs",
+      Date.parse("2026-05-07T11:59:00.000Z"),
+    );
+
+    handleActivity.call(bridge, {
+      active: true,
+      conversationId: threadId,
       path: "/tmp/rollout-2026-05-07T12-02-29-019e01e3-877b-73a1-a51a-68717c50a0fa.jsonl",
       title: "pocodex",
       updatedAtMs: Date.parse("2026-05-07T12:00:00.000Z"),
     });
+    handleActivity.call(bridge, {
+      active: false,
+      conversationId: threadId,
+      path: "/tmp/rollout-2026-05-07T12-02-29-019e01e3-877b-73a1-a51a-68717c50a0fa.jsonl",
+      title: "pocodex",
+      updatedAtMs: Date.parse("2026-05-07T12:01:00.000Z"),
+    });
+    const inactiveChangedThreadId = "019e01e4-0c4b-7c1d-9db7-94910e59a0c1";
+    handleActivity.call(bridge, {
+      active: false,
+      conversationId: inactiveChangedThreadId,
+      path: "/tmp/rollout-2026-05-07T12-03-00-019e01e4-0c4b-7c1d-9db7-94910e59a0c1.jsonl",
+      title: "quick cli turn",
+      updatedAtMs: Date.parse("2026-05-07T12:02:00.000Z"),
+    });
 
     expect(refreshes).toEqual([
       {
-        reason: "session activity",
-        threadId: "019e01e3-877b-73a1-a51a-68717c50a0fa",
+        reason: "codex session active",
+        threadId,
+      },
+      {
+        reason: "codex session inactive",
+        threadId,
+      },
+      {
+        reason: "codex session changed",
+        threadId: inactiveChangedThreadId,
       },
     ]);
+
+    await bridge.close();
+  });
+
+  it("queues one native Codex refresh after a POCodex thread resume mutation succeeds", async () => {
+    const refreshes: Array<{ reason?: string; threadId: string }> = [];
+    const nativeCodexRefresh = {
+      close: () => {},
+      queueThreadRefresh: (threadId: string, reason?: string) => {
+        refreshes.push({ reason, threadId });
+      },
+    };
+    const bridge = await createBridge(children, {
+      nativeCodexRefresh,
+    });
+    const threadId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "resume-write-1",
+        method: "thread/resume",
+        params: {
+          input: ["hello from pocodex"],
+          threadId,
+        },
+      },
+    });
+    children.at(0)?.stdout.write(
+      `${JSON.stringify({
+        id: "resume-write-1",
+        result: {
+          thread: {
+            id: threadId,
+          },
+        },
+      })}\n`,
+    );
+
+    await waitForCondition(() => refreshes.length === 1);
+
+    expect(refreshes).toEqual([
+      {
+        reason: "pocodex thread/resume",
+        threadId,
+      },
+    ]);
+
+    await bridge.close();
+  });
+
+  it("queues one native Codex refresh after a POCodex turn start succeeds", async () => {
+    const refreshes: Array<{ reason?: string; threadId: string }> = [];
+    const bridge = await createBridge(children, {
+      nativeCodexRefresh: {
+        close: () => {},
+        queueThreadRefresh: (threadId: string, reason?: string) => {
+          refreshes.push({ reason, threadId });
+        },
+      },
+    });
+    const threadId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "turn-start-1",
+        method: "turn/start",
+        params: {
+          input: [
+            {
+              text: "hello from pocodex",
+              type: "text",
+            },
+          ],
+          threadId,
+        },
+      },
+    });
+    children.at(0)?.stdout.write(
+      `${JSON.stringify({
+        id: "turn-start-1",
+        result: {
+          turn: {
+            id: "turn-1",
+          },
+        },
+      })}\n`,
+    );
+
+    await waitForCondition(() => refreshes.length === 1);
+
+    expect(refreshes).toEqual([
+      {
+        reason: "pocodex turn/start",
+        threadId,
+      },
+    ]);
+
+    await bridge.close();
+  });
+
+  it("does not queue native Codex refreshes for read-only thread resume requests", async () => {
+    const refreshes: Array<{ reason?: string; threadId: string }> = [];
+    const bridge = await createBridge(children, {
+      nativeCodexRefresh: {
+        close: () => {},
+        queueThreadRefresh: (threadId: string, reason?: string) => {
+          refreshes.push({ reason, threadId });
+        },
+      },
+    });
+    const threadId = "019e01e3-877b-73a1-a51a-68717c50a0fa";
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "resume-read-1",
+        method: "thread/resume",
+        params: {
+          threadId,
+        },
+      },
+    });
+    children.at(0)?.stdout.write(
+      `${JSON.stringify({
+        id: "resume-read-1",
+        result: {
+          thread: {
+            id: threadId,
+          },
+        },
+      })}\n`,
+    );
+    await waitForCondition(() => (children.at(0)?.writes ?? "").includes("resume-read-1"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(refreshes).toEqual([]);
 
     await bridge.close();
   });

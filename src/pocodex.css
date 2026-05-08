@@ -959,6 +959,19 @@ html[data-pocodex="true"] [aria-label="Open in Popout Window"] {
     font-size: 16px !important;
   }
 
+  html[data-pocodex="true"][data-pocodex-mobile-text-entry-focused="true"]
+    [data-pocodex-mobile-composer="active"] {
+    transform: translate3d(0, calc(0px - var(--pocodex-soft-keyboard-inset, 0px)), 0) !important;
+    transition: none !important;
+    will-change: transform;
+  }
+
+  html[data-pocodex="true"][data-pocodex-mobile-text-entry-focused="true"]
+    [data-pocodex-mobile-composer="active"]
+    [contenteditable="true"] {
+    scroll-margin-bottom: calc(var(--pocodex-soft-keyboard-inset, 0px) + 120px);
+  }
+
   html[data-pocodex="true"]
     nav[role="navigation"]
     [role="listitem"]

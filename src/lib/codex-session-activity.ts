@@ -31,6 +31,7 @@ interface SessionFileSnapshot {
 export interface CodexSessionActivityWatcherOptions {
   codexHomePath: string;
   onActivity: (activity: CodexSessionActivity) => void;
+  activeGraceMs?: number;
   pollIntervalMs?: number;
   recentFileLimit?: number;
   tailBytes?: number;
@@ -50,6 +51,7 @@ interface TaskEvent {
 export class CodexSessionActivityWatcher {
   private readonly codexHomePath: string;
   private readonly onActivity: (activity: CodexSessionActivity) => void;
+  private readonly activeGraceMs: number;
   private readonly pollIntervalMs: number;
   private readonly recentFileLimit: number;
   private readonly tailBytes: number;
@@ -62,6 +64,7 @@ export class CodexSessionActivityWatcher {
   constructor(options: CodexSessionActivityWatcherOptions) {
     this.codexHomePath = options.codexHomePath;
     this.onActivity = options.onActivity;
+    this.activeGraceMs = options.activeGraceMs ?? RECENT_WRITE_ACTIVE_GRACE_MS;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.recentFileLimit = options.recentFileLimit ?? DEFAULT_RECENT_FILE_LIMIT;
     this.tailBytes = options.tailBytes ?? DEFAULT_TAIL_BYTES;
@@ -102,8 +105,9 @@ export class CodexSessionActivityWatcher {
   }
 
   emitKnownActiveActivities(): void {
+    const nowMs = Date.now();
     for (const snapshot of this.snapshotsByPath.values()) {
-      if (snapshot.active) {
+      if (snapshot.active && !isStaleActiveSnapshot(snapshot, nowMs, this.activeGraceMs)) {
         this.emitActivity(snapshot);
       }
     }
@@ -114,15 +118,26 @@ export class CodexSessionActivityWatcher {
       const files = await listRecentCodexSessionFiles(this.codexHomePath, this.recentFileLimit);
       const threadTitles = await readCodexSessionIndexTitles(this.codexHomePath);
       const nextPaths = new Set(files.map((file) => file.path));
+      const nowMs = Date.now();
 
       for (const file of files) {
         const previous = this.snapshotsByPath.get(file.path);
         if (previous && previous.mtimeMs === file.mtimeMs && previous.size === file.size) {
+          if (previous.active && isStaleActiveSnapshot(previous, nowMs, this.activeGraceMs)) {
+            const nextSnapshot: SessionFileSnapshot = {
+              ...previous,
+              active: false,
+            };
+            this.snapshotsByPath.set(file.path, nextSnapshot);
+            this.emitActivity(nextSnapshot);
+          }
           continue;
         }
 
         const activity = await readCodexSessionActivity(file.path, {
+          activeGraceMs: this.activeGraceMs,
           fallbackUpdatedAtMs: file.mtimeMs,
+          nowMs,
           size: file.size,
           tailBytes: this.tailBytes,
         });
@@ -177,6 +192,8 @@ export function parseCodexSessionActivityJsonl(
   options: {
     fallbackConversationId?: string | null;
     fallbackUpdatedAtMs: number;
+    activeGraceMs?: number;
+    nowMs?: number;
     path: string;
     partialTail?: boolean;
   },
@@ -218,7 +235,11 @@ export function parseCodexSessionActivityJsonl(
     }
 
     const eventType = readNestedString(record.payload, ["type"]);
-    if (eventType !== "task_started" && eventType !== "task_complete") {
+    if (
+      eventType !== "task_started" &&
+      eventType !== "task_complete" &&
+      eventType !== "turn_aborted"
+    ) {
       continue;
     }
 
@@ -247,17 +268,17 @@ export function parseCodexSessionActivityJsonl(
     return null;
   }
 
+  const nowMs = options.nowMs ?? Date.now();
+  const activeGraceMs = options.activeGraceMs ?? RECENT_WRITE_ACTIVE_GRACE_MS;
+  const isRecentlyWritten = nowMs - options.fallbackUpdatedAtMs <= activeGraceMs;
   let active = false;
   if (latestStarted) {
     active =
-      latestStarted.turnId !== null
+      isRecentlyWritten &&
+      (latestStarted.turnId !== null
         ? !completedTurnIds.has(latestStarted.turnId)
-        : latestStarted.timestampMs > (latestCompleted?.timestampMs ?? 0);
-  } else if (
-    options.partialTail === true &&
-    !latestCompleted &&
-    Date.now() - options.fallbackUpdatedAtMs <= RECENT_WRITE_ACTIVE_GRACE_MS
-  ) {
+        : latestStarted.timestampMs > (latestCompleted?.timestampMs ?? 0));
+  } else if (options.partialTail === true && !latestCompleted && isRecentlyWritten) {
     active = true;
   }
 
@@ -331,7 +352,9 @@ async function readDirectorySafe(path: string) {
 async function readCodexSessionActivity(
   path: string,
   options: {
+    activeGraceMs: number;
     fallbackUpdatedAtMs: number;
+    nowMs: number;
     size: number;
     tailBytes: number;
   },
@@ -363,14 +386,24 @@ async function readCodexSessionActivity(
     }
 
     return parseCodexSessionActivityJsonl(content, {
+      activeGraceMs: options.activeGraceMs,
       fallbackConversationId,
       fallbackUpdatedAtMs: options.fallbackUpdatedAtMs,
+      nowMs: options.nowMs,
       partialTail,
       path,
     });
   } finally {
     await file.close();
   }
+}
+
+function isStaleActiveSnapshot(
+  snapshot: SessionFileSnapshot,
+  nowMs: number,
+  activeGraceMs: number,
+): boolean {
+  return nowMs - snapshot.mtimeMs > activeGraceMs;
 }
 
 export function parseCodexSessionIndexTitles(content: string): Map<string, string> {

@@ -7,6 +7,7 @@ import {
 } from "../src/lib/native-codex-refresh.js";
 
 const TARGET_THREAD_ID = "019e02ea-27b7-7071-b5de-4b5577ff2581";
+const SECOND_THREAD_ID = "019e034d-ddf4-7193-9241-3a3446c0b5e4";
 const PREVIOUS_THREAD_ID = "019e02dd-248b-7c71-9484-d77466be381e";
 
 describe("NativeCodexRefreshController", () => {
@@ -122,6 +123,41 @@ describe("NativeCodexRefreshController", () => {
     expect(openedThreads).toEqual([
       `codex://threads/${TARGET_THREAD_ID}`,
       `codex://threads/${TARGET_THREAD_ID}`,
+    ]);
+    controller.close();
+  });
+
+  it("paces refreshes across different threads", async () => {
+    const openedThreads: string[] = [];
+    const controller = new NativeCodexRefreshController({
+      enabled: true,
+      getClipboard: async () => "",
+      minRefreshIntervalMs: 40,
+      openSettleMs: 0,
+      platform: "darwin",
+      refreshDelayMs: 0,
+      runCommand: async (file, args) => {
+        if (file === "/usr/bin/open") {
+          openedThreads.push(args[0] ?? "");
+        }
+        return {
+          stderr: "",
+          stdout: "",
+        };
+      },
+    });
+
+    controller.queueThreadRefresh(TARGET_THREAD_ID);
+    controller.queueThreadRefresh(SECOND_THREAD_ID);
+    await waitForCondition(() => openedThreads.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(openedThreads).toEqual([`codex://threads/${TARGET_THREAD_ID}`]);
+
+    await waitForCondition(() => openedThreads.length === 2);
+    expect(openedThreads).toEqual([
+      `codex://threads/${TARGET_THREAD_ID}`,
+      `codex://threads/${SECOND_THREAD_ID}`,
     ]);
     controller.close();
   });

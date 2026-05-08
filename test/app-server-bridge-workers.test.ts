@@ -296,6 +296,30 @@ describeAppServerBridge(({ children }) => {
     await bridge.close();
   });
 
+  it("unwraps local route thread ids before forwarding thread resume", async () => {
+    const bridge = await createBridge(children);
+    const child = children.at(0);
+
+    await bridge.forwardBridgeMessage({
+      type: "mcp-request",
+      request: {
+        id: "resume-local-route",
+        method: "thread/resume",
+        params: {
+          threadId: "local/019e01e3-877b-73a1-a51a-68717c50a0fa",
+          cwd: TEST_WORKSPACE_ROOT,
+        },
+      },
+    });
+
+    const forwarded = child?.writes ?? "";
+    expect(forwarded).toContain('"method":"thread/resume"');
+    expect(forwarded).toContain('"threadId":"019e01e3-877b-73a1-a51a-68717c50a0fa"');
+    expect(forwarded).not.toContain('"threadId":"local/');
+
+    await bridge.close();
+  });
+
   it("preserves an existing local thread resume path", async () => {
     const bridge = await createBridge(children);
     const child = children.at(0);
